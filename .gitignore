@@ -1,0 +1,20 @@
+# Build artifacts
+tmp_build_dir/
+*.o
+*.exe
+*.ex
+*.mod
+*.d
+
+# Plot/checkpoint output
+plt*/
+chk*/
+*.hdf5
+*.h5
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+*.swp

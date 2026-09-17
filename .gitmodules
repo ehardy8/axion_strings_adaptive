@@ -1,0 +1,6 @@
+[submodule "GRTeclyn"]
+	path = GRTeclyn
+	url = https://github.com/GRTLCollaboration/GRTeclyn.git
+[submodule "amrex"]
+	path = amrex
+	url = https://github.com/AMReX-Codes/amrex.git

@@ -1,0 +1,51 @@
+# AxionStrings parameter file -- milestone-1 task 1.1 build/run baseline.
+# This is the unmodified GRTeclyn KleinGordon "Wave" model, renamed, used
+# only to confirm the skeleton builds and runs end to end. Physics is
+# replaced in tasks 1.2/1.3.
+
+#################################################
+# Filesystem parameters
+
+amr.verbose = 1
+amr.check_int = 8
+amr.plot_int  = 1
+amr.derive_plot_vars = ALL
+
+#################################################
+# Grid parameters
+
+amr.n_cell           = 64 64 64
+geometry.prob_extent = 32 32 32
+
+amr.max_level = 0 # there are max_level + 1 levels
+
+amr.max_grid_size   = 64
+amr.blocking_factor = 16
+amr.n_error_buf     = 1
+
+#################################################
+# Boundary condition parameters
+
+geometry.is_periodic = 1 1 1
+
+#################################################
+# Evolution parameters
+
+evolution.dt_multiplier = 0.2
+evolution.stop_time      = 2
+evolution.max_steps      = 8
+
+# Coefficient for KO numerical dissipation. CLAUDE.md constraint 1: this
+# project defaults to sigma = 0 always (it damps the high-k modes the
+# spectral index is measured from). The inherited RHS still calls
+# add_dissipation(); it becomes a no-op at sigma = 0 and is removed
+# entirely when the RHS is replaced in task 1.3.
+evolution.sigma = 0.0
+
+#################################################
+# AxionStrings parameters (placeholder Wave model, task 1.1 only)
+
+axion_strings.initial_time = 0.0
+
+wave.wave_vector = 10.0
+wave.scalar_mass = 0.0

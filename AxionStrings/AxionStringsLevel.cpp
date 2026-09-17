@@ -4,7 +4,9 @@
 #include "EnergyKernel.hpp"
 #include "FixedGridsTagger.hpp"
 #include "FourierIC.hpp"
+#include "MaskedFieldBuffer.hpp"
 #include "SmallDataIO.hpp"
+#include "SpectrumKernel.hpp"
 #include "StateTypes.hpp"
 #include "StateVariables.hpp"
 #include "StringFinder.hpp"
@@ -40,6 +42,100 @@ void AxionStringsLevel::initData()
 
     std::string ic_mode = "homogeneous";
     amrex::ParmParse("axion_strings").query("ic_mode", ic_mode);
+
+    if (ic_mode == "plane_wave_test")
+    {
+        // T3 (conventions.md sec.13/milestone-1.md task 1.9): a small-
+        // amplitude axion plane wave, no strings, for the spectral
+        // normalisation end-to-end check. psi1=R, Pi1=0 (no radial
+        // excitation); Pi2 = C sin(2 pi p0 x/L) gives a known single-mode
+        // theta' = (psi1 Pi2 - Pi1 psi2)/|psi|^2 = Pi2/R = (C/R) sin(...)
+        // directly (psi2=0 keeps this exact, not just small-amplitude).
+        const amrex::Real tau = s_tau_i;
+        const amrex::Real R_i = s_background.R(tau);
+
+        int p0 = 4;
+        amrex::ParmParse("axion_strings").queryAdd("plane_wave_p0", p0);
+        amrex::Real amplitude_C = 0.1;
+        amrex::ParmParse("axion_strings")
+            .queryAdd("plane_wave_amplitude", amplitude_C);
+
+        const auto dx         = Geom().CellSizeArray();
+        const auto prob_lo    = Geom().ProbLoArray();
+        const amrex::Real L_x = Geom().ProbLength(0);
+        const amrex::Real k0  = 2.0 * M_PI * p0 / L_x;
+
+        amrex::MultiFab &state_new = get_new_data(state_index);
+        auto const &arrs           = state_new.arrays();
+
+        amrex::ParallelFor(
+            state_new, state_new.nGrowVect(),
+            [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept
+            {
+                const amrex::Real x = prob_lo[0] + (i + 0.5) * dx[0];
+                arrs[box_no](i, j, k, c_psi1) = R_i;
+                arrs[box_no](i, j, k, c_psi2) = 0.0;
+                arrs[box_no](i, j, k, c_Pi1)  = 0.0;
+                arrs[box_no](i, j, k, c_Pi2) =
+                    amplitude_C * std::sin(k0 * x);
+            });
+        amrex::Gpu::streamSynchronize();
+
+        // Check the spectrum of the exact IC just set, before any
+        // evolution changes it (specific_post_timestep only fires after a
+        // step -- by then R(tau) itself has moved on, so the field is no
+        // longer this exact, by-hand-checkable configuration).
+        bool compute_spectrum_flag = false;
+        amrex::ParmParse("axion_strings")
+            .queryAdd("compute_spectrum", compute_spectrum_flag);
+        if (compute_spectrum_flag)
+        {
+            MaskingParams none_masking{};
+            none_masking.scheme = MaskingScheme::None;
+            amrex::MultiFab a_dot_buffer(state_new.boxArray(),
+                                         state_new.DistributionMap(), 1, 0);
+            fill_masked_a_dot_buffer(a_dot_buffer, state_new, none_masking,
+                                     R_i);
+            const Spectrum spectrum = compute_spectrum(a_dot_buffer, Geom());
+
+            const double n_total_d =
+                static_cast<double>(Geom().Domain().numPts());
+            const double sum_sq = static_cast<double>(amrex::MultiFab::Dot(
+                a_dot_buffer, 0, a_dot_buffer, 0, 1, 0));
+            const double real_space_mean_sq = sum_sq / n_total_d;
+            const double n_total_sq         = n_total_d * n_total_d;
+
+            // S(p) = 4*pi<p^2|X_p|^2> is built from raw (un-Parseval-
+            // normalised) |X_p|^2, same as full_cube/inscribed_sphere --
+            // needs the same /n_total_sq. Approximate, not exact, even
+            // after that: a single anisotropic mode shares its shell with
+            // other (zero-power) lattice points at the same |p|, which
+            // dilutes the shell average -- unlike the full-cube/inscribed-
+            // sphere sums, which include every mode exactly once and so
+            // match the real-space value exactly.
+            double shell_integral = 0.0;
+            for (double s : spectrum.shell_average)
+            {
+                shell_integral += s;
+            }
+            shell_integral /= n_total_sq;
+
+            amrex::Print()
+                << "  [T3] known amplitude_C = " << amplitude_C
+                << ", p0 = " << p0
+                << ": expected <a_dot^2> = " << 0.5 * amplitude_C * amplitude_C
+                << "\n    measured <a_dot^2> real-space = "
+                << real_space_mean_sq
+                << "  Parseval (full cube) = "
+                << spectrum.full_cube_energy / n_total_sq
+                << "  Parseval (inscribed sphere) = "
+                << spectrum.inscribed_sphere_energy / n_total_sq << "\n"
+                << "    shell-binned integral (sum_s S(s)/n_total^2, "
+                   "approximate) = "
+                << shell_integral << "\n";
+        }
+        return;
+    }
 
     if (ic_mode == "straight_string_test")
     {
@@ -438,6 +534,66 @@ void AxionStringsLevel::specific_post_timestep()
         static_cast<amrex::Real>(energy.n_total),
         static_cast<amrex::Real>(energy.n_unmasked)};
     network_scalars_file.write_time_data_line(data_row);
+
+    // Spectrum (conventions.md sec.9/sec.12, milestone-1.md task 1.9):
+    // opt-in (computing an FFT every snapshot is not free), gated behind
+    // axion_strings.compute_spectrum. Masking is applied at exactly one
+    // place -- MaskedFieldBuffer.hpp, filling the buffer handed to the FFT
+    // -- per CLAUDE.md constraint 5.
+    bool compute_spectrum_flag = false;
+    amrex::ParmParse("axion_strings")
+        .queryAdd("compute_spectrum", compute_spectrum_flag);
+    if (compute_spectrum_flag)
+    {
+        amrex::MultiFab a_dot_buffer(state_new.boxArray(),
+                                     state_new.DistributionMap(), 1, 0);
+        fill_masked_a_dot_buffer(a_dot_buffer, state_new, s_energy_masking,
+                                 s_background.R(tau));
+        const Spectrum spectrum = compute_spectrum(a_dot_buffer, Geom());
+
+        // Direct real-space mean square of the exact same buffer that was
+        // fed to the FFT -- the honest way to get <(masked a_dot)^2>,
+        // rather than trying to back it out of axion_kinetic_energy's own
+        // f_a^2/2 prefactors (error-prone; avoided deliberately).
+        const double sum_sq = static_cast<double>(amrex::MultiFab::Dot(
+            a_dot_buffer, 0, a_dot_buffer, 0, 1, 0));
+        const double real_space_mean_sq = sum_sq / energy.n_total;
+
+        const double n_total_sq = energy.n_total * energy.n_total;
+        // Parseval (conventions.md sec.9, verified with the user): a
+        // spatial *average* of a squared real field equals
+        // Sum_p|X_p|^2 / N_total^2 (one factor of N_total from the
+        // average itself, one from Parseval for this "no normalisation,
+        // round-trip = N_total" FFT convention) -- exact, independent of
+        // how the shell-binning below groups modes.
+        const double parseval_from_spectrum_full =
+            spectrum.full_cube_energy / n_total_sq;
+        const double parseval_from_spectrum_inscribed =
+            spectrum.inscribed_sphere_energy / n_total_sq;
+
+        // S(p) needs the same /n_total_sq as the two Parseval sums above
+        // (it too is built from raw |X_p|^2); even then this is only
+        // approximate, not exact, since a single shell can mix modes with
+        // very different power (unlike the full-cube/inscribed-sphere
+        // sums, which include every mode exactly once).
+        double shell_integral = 0.0;
+        for (double s : spectrum.shell_average)
+        {
+            shell_integral += s; // integral over |k|, bin width 1
+        }
+        shell_integral /= n_total_sq;
+
+        amrex::Print()
+            << "  [AxionStrings spectrum] <a_dot^2> real-space = "
+            << real_space_mean_sq
+            << "  Parseval (full cube) = " << parseval_from_spectrum_full
+            << "  Parseval (inscribed sphere) = "
+            << parseval_from_spectrum_inscribed << "\n"
+            << "    full_cube/inscribed_sphere ratio = "
+            << (spectrum.full_cube_energy / spectrum.inscribed_sphere_energy)
+            << "  shell-binned integral (sum_s S(s)/n_total^2, approximate) = "
+            << shell_integral << "\n";
+    }
 }
 
 void AxionStringsLevel::tag_cells(amrex::TagBoxArray &tags,

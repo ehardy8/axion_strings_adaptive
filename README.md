@@ -58,11 +58,12 @@ string, `1 + b_inv` = Moore; `b_inv = 1` in radiation domination, so `c0=2`):
 ## Unit tests
 
 `AxionStrings/Background.hpp` (the analytic FRW background and `c(tau)`
-scheme of `conventions.md` sec.2-5) is deliberately independent of AMReX, so
-its tests build and run in seconds with no MPI/AMReX dependency:
+scheme of `conventions.md` sec.2-5) and `AxionStrings/BoxPlan.hpp` (box
+planning, sec.5) are deliberately independent of AMReX, so their tests build
+and run in seconds with no MPI/AMReX dependency:
 
 ```bash
 cd AxionStrings/tests
-clang++ -std=c++20 -O1 -I ../../GRTeclyn/external/doctest test_background.cpp -o /tmp/test_background
-/tmp/test_background
+clang++ -std=c++20 -O1 -I ../../GRTeclyn/external/doctest test_background.cpp test_box_plan.cpp -o /tmp/test_all
+/tmp/test_all
 ```

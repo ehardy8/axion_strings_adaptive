@@ -47,3 +47,22 @@ is clang-family either way.
 env PATH="/usr/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/bin:/usr/sbin:/sbin" \
     mpirun -n 2 AxionStrings/AxionStrings3d.llvm.MPI.ex AxionStrings/params_test.txt
 ```
+
+Pick the evolution mode with `axion_strings.c0` (0 = physical, 1 = fat
+string, `1 + b_inv` = Moore; `b_inv = 1` in radiation domination, so `c0=2`):
+
+```bash
+... AxionStrings/params_test.txt axion_strings.c0=2.0
+```
+
+## Unit tests
+
+`AxionStrings/Background.hpp` (the analytic FRW background and `c(tau)`
+scheme of `conventions.md` sec.2-5) is deliberately independent of AMReX, so
+its tests build and run in seconds with no MPI/AMReX dependency:
+
+```bash
+cd AxionStrings/tests
+clang++ -std=c++20 -O1 -I ../../GRTeclyn/external/doctest test_background.cpp -o /tmp/test_background
+/tmp/test_background
+```

@@ -1,9 +1,8 @@
 #ifndef AXIONSTRINGSLEVEL_HPP_
 #define AXIONSTRINGSLEVEL_HPP_
 
-#include "AxionStringsRHS.hpp"
+#include "Background.hpp"
 #include "DefaultLevelBld.hpp"
-#include "DerivedVariables.hpp"
 #include "GRAmrLevel.hpp"
 
 class AxionStringsLevel : public GRAmrLevel
@@ -11,7 +10,7 @@ class AxionStringsLevel : public GRAmrLevel
   public:
     using GRAmrLevel::GRAmrLevel;
 
-    //! Define data descriptors.
+    //! Define data descriptors, and cache the axion_strings.* parameters.
     static void variableSetUp();
 
     //! Initialize data at problem start-up.
@@ -25,15 +24,18 @@ class AxionStringsLevel : public GRAmrLevel
     void specific_update_ode(amrex::MultiFab &a_soln) override {};
 
     // to do post each time step on every level
-    void specific_post_timestep() override {};
+    void specific_post_timestep() override;
 
     //! Error estimation for regridding.
     void tag_cells(amrex::TagBoxArray &tags,
                    amrex::Real a_regrid_threshold) override;
 
-    template <class model_t>
-    void eval_model_specific_rhs(amrex::MultiFab &a_soln,
-                                 amrex::MultiFab &a_rhs);
+    // Background and c(tau) schedule, cached once in variableSetUp() from
+    // the axion_strings.* parameters (conventions.md sec.4-5). Conformal
+    // time is tau = s_tau_i + a_time, since the AMReX clock always starts
+    // at a_time = 0.
+    inline static Background s_background{};
+    inline static amrex::Real s_tau_i{1.0};
 
   private:
 

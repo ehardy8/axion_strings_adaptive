@@ -7,49 +7,56 @@
 
 #include "AxionStringsRHS.hpp"
 
-template <class model_t, class deriv_t>
+template <class deriv_t>
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE amrex::Real
+AxionStringsRHS<deriv_t>::laplacian(
+    const amrex::Real *state_ptr_ijk, int comp,
+    const amrex::Array1D<int, 0, AMREX_SPACEDIM> &strides,
+    amrex::Long comp_stride) const
+{
+    amrex::Real result = 0.0;
+    FOR (i)
+    {
+        result += m_deriv.diff2(state_ptr_ijk + comp * comp_stride, strides(i));
+    }
+    return result;
+}
+
+template <class deriv_t>
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE void
-AxionStringsRHS<model_t, deriv_t>::operator()(
+AxionStringsRHS<deriv_t>::operator()(
     int ix, int iy, int iz, const amrex::Array4<amrex::Real> &rhs_state,
     const amrex::Array4<amrex::Real const> &state) const
 {
     const auto *state_ptr_ijk = state.ptr(ix, iy, iz);
-    amrex::Array1D<amrex::Real, 0, AMREX_SPACEDIM>
-        d2_phi{}; // no cross second order derivatives needed
+    const amrex::Long comp_stride = state.stride.a[2];
+
     amrex::Array1D<int, 0, AMREX_SPACEDIM> strides{
         AMREX_D_DECL(1, static_cast<int>(state.stride.a[0]),
                      static_cast<int>(state.stride.a[1]))};
 
-    FOR (i)
-    {
-        d2_phi(i) = m_deriv.diff2(state_ptr_ijk + c_phi * state.stride.a[2],
-                                  strides(i));
-    }
+    const amrex::Real lap_psi1 =
+        laplacian(state_ptr_ijk, c_psi1, strides, comp_stride);
+    const amrex::Real lap_psi2 =
+        laplacian(state_ptr_ijk, c_psi2, strides, comp_stride);
 
-    rhs_equation(rhs_state.cellData(ix, iy, iz), state.cellData(ix, iy, iz),
-                 d2_phi);
+    const auto cell = state.cellData(ix, iy, iz);
+    const amrex::Real psi1 = cell[c_psi1];
+    const amrex::Real psi2 = cell[c_psi2];
 
-    m_deriv.add_dissipation(ix, iy, iz, rhs_state.cellData(ix, iy, iz), state,
-                            m_sigma);
-}
+    const amrex::Real psi_sq_minus_R_sq =
+        psi1 * psi1 + psi2 * psi2 - m_R_squared;
+    const amrex::Real potential_coeff = 0.5 * m_lambda * psi_sq_minus_R_sq;
 
-template <class model_t, class deriv_t>
-AMREX_GPU_DEVICE AMREX_FORCE_INLINE void
-AxionStringsRHS<model_t, deriv_t>::rhs_equation(
-    const amrex::CellData<amrex::Real> &rhs_cell_data,
-    const amrex::CellData<amrex::Real const> &state_cell_data,
-    const amrex::Array1D<amrex::Real, 0, AMREX_SPACEDIM> &d2_phi) const
-{
-    rhs_cell_data[c_phi] = state_cell_data[c_Pi];
+    auto rhs_cell = rhs_state.cellData(ix, iy, iz);
 
-    rhs_cell_data[c_Pi] = d2_phi.sum();
+    rhs_cell[c_psi1] = cell[c_Pi1];
+    rhs_cell[c_psi2] = cell[c_Pi2];
 
-    amrex::Real V_of_phi = 0.0;
-    amrex::Real dVdphi   = 0.0;
-
-    m_model.compute_potential(V_of_phi, dVdphi, state_cell_data[c_phi]);
-
-    rhs_cell_data[c_Pi] += dVdphi;
+    rhs_cell[c_Pi1] =
+        lap_psi1 + m_curvature_coeff * psi1 - potential_coeff * psi1;
+    rhs_cell[c_Pi2] =
+        lap_psi2 + m_curvature_coeff * psi2 - potential_coeff * psi2;
 }
 
 #endif // AXIONSTRINGSRHS_IMPL_HPP_

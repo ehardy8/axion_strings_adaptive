@@ -1,25 +1,26 @@
-# AxionStrings parameter file -- milestone-1 task 1.1 build/run baseline.
-# This is the unmodified GRTeclyn KleinGordon "Wave" model, renamed, used
-# only to confirm the skeleton builds and runs end to end. Physics is
-# replaced in tasks 1.2/1.3.
+# AxionStrings parameter file -- milestone-1 tasks 1.2/1.3 smoke test.
+# Box planning (N, N1, N2 -> domain size, tau_f, dt) is task 1.4; the grid
+# parameters below are placeholders, not yet derived from physical inputs.
+# Initial conditions are the placeholder homogeneous solution of task 1.2/1.3
+# (see AxionStringsLevel::initData); the real Fourier-mode + pre-evolution
+# generator is task 1.5.
 
 #################################################
 # Filesystem parameters
 
 amr.verbose = 1
-amr.check_int = 8
-amr.plot_int  = 1
-amr.derive_plot_vars = ALL
+amr.check_int = -1
+amr.plot_int  = 2
 
 #################################################
 # Grid parameters
 
-amr.n_cell           = 64 64 64
-geometry.prob_extent = 32 32 32
+amr.n_cell           = 32 32 32
+geometry.prob_extent = 16 16 16
 
-amr.max_level = 0 # there are max_level + 1 levels
+amr.max_level = 0 # single-level throughout milestone 1
 
-amr.max_grid_size   = 64
+amr.max_grid_size   = 32
 amr.blocking_factor = 16
 amr.n_error_buf     = 1
 
@@ -33,19 +34,19 @@ geometry.is_periodic = 1 1 1
 
 evolution.dt_multiplier = 0.2
 evolution.stop_time      = 2
-evolution.max_steps      = 8
+evolution.max_steps      = 10
 
-# Coefficient for KO numerical dissipation. CLAUDE.md constraint 1: this
-# project defaults to sigma = 0 always (it damps the high-k modes the
-# spectral index is measured from). The inherited RHS still calls
-# add_dissipation(); it becomes a no-op at sigma = 0 and is removed
-# entirely when the RHS is replaced in task 1.3.
-evolution.sigma = 0.0
+# Note: this RHS does not implement Kreiss-Oliger dissipation at all (not
+# just sigma = 0) -- see AxionStringsRHS.hpp. evolution.sigma is unused.
 
 #################################################
-# AxionStrings parameters (placeholder Wave model, task 1.1 only)
+# AxionStrings parameters (conventions.md sec.2, 4, 5)
 
-axion_strings.initial_time = 0.0
+# a_inv = 2 <-> radiation domination (b_inv = 1)
+axion_strings.a_inv = 2.0
 
-wave.wave_vector = 10.0
-wave.scalar_mass = 0.0
+# c: 0 = physical, 1 = fat string, 1 + b_inv = Moore (= 2 in RD)
+axion_strings.c0 = 0.0
+
+# Conformal time at which the run starts (a_time = 0 here)
+axion_strings.tau_i = 1.0

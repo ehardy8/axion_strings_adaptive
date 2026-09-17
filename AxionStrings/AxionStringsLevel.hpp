@@ -37,6 +37,9 @@ class AxionStringsLevel : public GRAmrLevel
     inline static Background s_background{};
     inline static amrex::Real s_tau_i{1.0};
 
+    // Whether the network_scalars.dat header has been written yet.
+    inline static bool s_wrote_network_scalars_header{false};
+
   private:
 
     AxionStringsLevel &getLevel(int lev)

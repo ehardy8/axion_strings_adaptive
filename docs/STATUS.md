@@ -8,8 +8,8 @@ Tracks progress against `milestone-1.md` task by task. Updated as work lands.
 | 1.2 Complex state | **Done** | `NUM_VARS=4` (`psi1,psi2,Pi1,Pi2`) in `StateVariables.hpp`. |
 | 1.3 RHS with c(tau) | **Done** | `Background.hpp` (analytic `R(tau)`, `lambda(tau)` with switch re-anchoring, AMReX-free) + `AxionStringsRHS` (complex EOM, no `model_t` template -- one physics, `c(tau)` only enters via `lambda(tau)`). `R(tau)`/`lambda(tau)`/curvature coeff computed on host in `specific_eval_rhs` and passed in as plain values (no ParmParse in the kernel). KO dissipation omitted entirely (not just `sigma=0`) per CLAUDE.md constraint 1. Verified: all three modes (c=0,1,1+b_inv) run; `m_r/H` from the code (`H_over_mr_direct`, using R/R'/lambda) matches the sec.5 closed form to round-off, in both a standalone doctest suite (`AxionStrings/tests/test_background.cpp`, AMReX-free) and at runtime via a `specific_post_timestep` diagnostic. Qualitative behaviour also matches the sec.4 table: m_r/H grows (c=0), grows more slowly (c=1), constant (c=2=Moore in RD). Placeholder initial data: homogeneous `psi1=R(tau)`, an exact solution of the free EOM (real ICs are task 1.5). |
 | 1.4 Parameters and box planning | **Done** | `BoxPlan.hpp` (AMReX-free, unit-tested): general box plan (`tau_f`, `L_tilde`, `delta_x` from `N,N1,N2,a_inv,c`, sec.5) plus the Moore-phase dynamic-range check (`log(H0/H)_max` from `N,N1,N2,gamma`). `AxionStringsParams::apply_box_plan` wires this into `SimulationParameters::check_params()` (runs first, before `BaseParameterChecker`, since it may need to inject `geometry.prob_extent`/`amr.n_cell`/`evolution.stop_time` before those are validated elsewhere): if `axion_strings.N` is absent, box planning is skipped entirely (ad hoc/manual configs, e.g. the 1.2/1.3 smoke tests, are unaffected); if present, derived quantities are echoed at startup and injected into ParmParse (so they land in `parameters_and_version.txt` too) when not already user-set, or cross-checked (abort on mismatch) when they are. Any configured switch is treated as the fat->Moore protocol (sec.4's only described use) and routed to the dynamic-range check instead of the general formula, which is singular at `c = a_inv`; a single constant `c0 = a_inv` (Moore run with no switch) is also detected and routed there. Verified by running all of: no-box-planning (unchanged), auto-derived geometry/n_cell/stop_time, a deliberate mismatch (aborts), Moore mode with an achievable and an unachievable target dynamic range (accepts/aborts correctly), and the switch-triggered Moore path. |
-| 1.5 Initial conditions and restarts | Not started | |
-| 1.6 String finder and xi | Not started | |
+| 1.5 Initial conditions and restarts | In progress | `XiFormula.hpp` (AMReX-free, unit-tested): the sec.8 xi<->N_p relation in both directions. Confirmed with the user: the pre-evolution stopping target is a plaquette count, derived by inverting this formula at `tau = tau_i` (the main run's start time, an independent input -- not necessarily `tau0`) using the *pre-evolution* grid's `dx`, `L_tilde`. Blocked on the rest (Fourier-mode generator, the pre-evolution EOM/level, the actual xi-monitoring loop) until task 1.6 exists, since the stopping check needs a working plaquette counter. Also derived (pending user confirmation) a distinct `PreEvolutionBackground` for the pre-evolution phase -- see the known-issues note below. |
+| 1.6 String finder and xi | Not started | Needed next: `xi_from_plaquette_count` (already implemented in `XiFormula.hpp`) needs an actual plaquette-winding counter to call it with. |
 | 1.7 Masking | Not started | |
 | 1.8 Energies | Not started | |
 | 1.9 Spectra | Not started | |
@@ -40,3 +40,25 @@ Tracks progress against `milestone-1.md` task by task. Updated as work lands.
   `L_tilde`/`tau_f` (sec.5 doesn't give one -- the general formula is
   singular at `c = a_inv`). A production fat->Moore run currently needs
   `geometry.prob_extent`/`evolution.stop_time` set by hand.
+
+- Pre-evolution's EOM (conventions.md sec.7) is not an instance of the main
+  `Background` class -- `R = R0(t/t0)` (linear in *cosmic* time) is a
+  genuinely distinct, singular case (`a_inv=1`, where `b_inv=0` and
+  `R0=1/b_inv` diverges in the main formulas), not reducible to fat mode
+  under radiation domination (checked: fat/RD gives `m_r/H ~ tau`, not
+  constant). Derived independently (not yet reviewed/confirmed by the user):
+  switching to pre-evolution's own conformal time `tau_pre` (`dtau_pre =
+  dt/R(t)`) turns `R(t)=R0(t/t0)` into `R(tau_pre) = R0 e^(alpha*tau_pre)`,
+  `alpha = R0/t0`. The same `psi=R phi/v` rescaling trick from sec.3 (generic
+  in `R(tau)`, not tied to the power-law form) then gives an EOM with the
+  *same* Laplacian/curvature/potential structure as the main RHS, just with
+  a constant curvature coefficient `alpha^2` (instead of
+  `(1-b_inv)/(b_inv^2 tau^2)`) and `lambda(tau_pre) = lambda_pre0
+  (R(tau_pre)/R0)^-2` (the `c=1`-shaped formula, with the new `R`). Verified
+  `R*m_r` and `m_r/H` are both exactly constant under this, matching sec.7's
+  stated requirement. Since `R0`/`alpha` are pre-evolution's own time-gauge
+  freedom, `R0=alpha=1` WLOG, leaving one physical input: `gamma_pre`, the
+  constant `m_r/H` to relax the network at. This means `AxionStringsRHS`
+  can be reused unchanged for pre-evolution -- only a new
+  `PreEvolutionBackground` (same 3-quantity interface as `Background`) is
+  needed. Not yet implemented pending confirmation this derivation is right.

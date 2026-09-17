@@ -1,9 +1,11 @@
 #ifndef AXIONSTRINGSLEVEL_HPP_
 #define AXIONSTRINGSLEVEL_HPP_
 
+#include "AxionStringsParams.hpp"
 #include "Background.hpp"
 #include "DefaultLevelBld.hpp"
 #include "GRAmrLevel.hpp"
+#include "PreEvolutionBackground.hpp"
 
 class AxionStringsLevel : public GRAmrLevel
 {
@@ -30,12 +32,32 @@ class AxionStringsLevel : public GRAmrLevel
     void tag_cells(amrex::TagBoxArray &tags,
                    amrex::Real a_regrid_threshold) override;
 
+    // Signals the pre-evolution -> main run loop (Main_AxionStrings.cpp) to
+    // stop once the xi-monitoring loop's target is reached (task 1.5).
+    int okToContinue() override;
+
+    // Pre-evolution -> main handoff (conventions.md sec.7): rescales the
+    // restored state from pre-evolution's normalisation into the main
+    // run's, when axion_strings.restart_from_pre_evolution is set.
+    void specific_post_restart() override;
+
     // Background and c(tau) schedule, cached once in variableSetUp() from
     // the axion_strings.* parameters (conventions.md sec.4-5). Conformal
     // time is tau = s_tau_i + a_time, since the AMReX clock always starts
-    // at a_time = 0.
+    // at a_time = 0 (or, after a restart, at whatever time the checkpoint
+    // recorded).
     inline static Background s_background{};
     inline static amrex::Real s_tau_i{1.0};
+    inline static AxionStringsParams::Mode s_mode{
+        AxionStringsParams::Mode::Main};
+
+    // Pre-evolution only (conventions.md sec.7).
+    inline static PreEvolutionBackground s_pre_background{};
+    inline static double s_xi_target{0.0};
+    inline static AxionStringsParams::XiCheckCadence s_xi_cadence{};
+    inline static long s_steps_since_xi_check{0};
+    inline static long s_xi_check_interval{50};
+    inline static bool s_pre_evolution_target_reached{false};
 
     // Whether the network_scalars.dat header has been written yet.
     inline static bool s_wrote_network_scalars_header{false};

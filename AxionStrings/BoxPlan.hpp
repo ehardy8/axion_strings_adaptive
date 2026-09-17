@@ -48,6 +48,18 @@ compute_general_box_plan(int N, double N1, double N2, double a_inv, double c)
     return plan;
 }
 
+// Comoving box size for the pre-evolution stage (conventions.md sec.7):
+//   L_tilde_init = L_tilde_main * (1/(a_inv-1)) * (tau_i/tau0)^((1-c)/(a_inv-1))
+// c is the main run's c at its start (c0), tau0 = 1.
+[[nodiscard]] inline double pre_evolution_L_tilde(double L_tilde_main,
+                                                  double a_inv, double c,
+                                                  double tau_i)
+{
+    constexpr double tau0 = 1.0;
+    return L_tilde_main * (1.0 / (a_inv - 1.0)) *
+           std::pow(tau_i / tau0, (1.0 - c) / (a_inv - 1.0));
+}
+
 // Moore-phase dynamic-range check (conventions.md sec.5): during c = 1+b_inv,
 // HL falls as 1/tau while N2 only improves; the phase ends when HL reaches
 // N1. gamma = m_r/H at the start of the Moore phase (fixed by the preceding

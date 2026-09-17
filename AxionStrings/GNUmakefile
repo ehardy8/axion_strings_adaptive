@@ -6,6 +6,10 @@ EBASE = AxionStrings
 
 AMREX_HOME ?= $(realpath ../amrex)
 
+# Fourier-mode initial conditions (task 1.5) use amrex::FFT::R2C.
+USE_FFT := TRUE
+FFTW_HOME ?= /opt/homebrew/opt/fftw
+
 include $(GRTECLYN_HOME)/Tools/GNUMake/Make.defs
 
 include $(AMREX_HOME)/Src/Base/Make.package

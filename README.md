@@ -57,13 +57,23 @@ string, `1 + b_inv` = Moore; `b_inv = 1` in radiation domination, so `c0=2`):
 
 ## Unit tests
 
-`AxionStrings/Background.hpp` (the analytic FRW background and `c(tau)`
-scheme of `conventions.md` sec.2-5) and `AxionStrings/BoxPlan.hpp` (box
-planning, sec.5) are deliberately independent of AMReX, so their tests build
-and run in seconds with no MPI/AMReX dependency:
+`Background.hpp`, `BoxPlan.hpp`, `XiFormula.hpp`, `PlaquetteWinding.hpp` and
+`PreEvolutionBackground.hpp` are deliberately independent of AMReX, so their
+tests build and run in seconds with no MPI/AMReX dependency:
 
 ```bash
 cd AxionStrings/tests
-clang++ -std=c++20 -O1 -I ../../GRTeclyn/external/doctest test_background.cpp test_box_plan.cpp -o /tmp/test_all
+clang++ -std=c++20 -O1 -I ../../GRTeclyn/external/doctest \
+    test_background.cpp test_box_plan.cpp test_xi_formula.cpp \
+    test_plaquette_winding.cpp test_pre_evolution_background.cpp \
+    -o /tmp/test_all
 /tmp/test_all
 ```
+
+## Fourier-mode initial conditions (task 1.5)
+
+`FourierIC.hpp` uses `amrex::FFT::R2C`, which needs FFTW and AMReX's FFT
+module. The `GNUmakefile` already sets `USE_FFT := TRUE` and
+`FFTW_HOME ?= /opt/homebrew/opt/fftw` (adjust `FFTW_HOME` if FFTW lives
+somewhere else on your machine; install it with `brew install fftw` if
+needed).

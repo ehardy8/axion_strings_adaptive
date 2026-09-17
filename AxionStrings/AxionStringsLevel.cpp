@@ -2,6 +2,7 @@
 #include "AxionStringsParams.hpp"
 #include "AxionStringsRHS.hpp"
 #include "FixedGridsTagger.hpp"
+#include "FourierIC.hpp"
 #include "SmallDataIO.hpp"
 #include "StateTypes.hpp"
 #include "StateVariables.hpp"
@@ -14,8 +15,17 @@ void AxionStringsLevel::variableSetUp()
 
     state_variable_set_up();
 
+    s_mode       = AxionStringsParams::read_mode();
     s_background = AxionStringsParams::read_background();
     s_tau_i      = AxionStringsParams::read_tau_i();
+
+    if (s_mode == AxionStringsParams::Mode::PreEvolution)
+    {
+        s_pre_background = AxionStringsParams::read_pre_evolution_background();
+        s_xi_target       = AxionStringsParams::read_xi_target();
+        s_xi_cadence       = AxionStringsParams::read_xi_check_cadence();
+        s_xi_check_interval = s_xi_cadence.coarse_interval;
+    }
 }
 
 void AxionStringsLevel::initData()
@@ -83,6 +93,47 @@ void AxionStringsLevel::initData()
         return;
     }
 
+    const bool generating_pre_evolution_ic =
+        (s_mode == AxionStringsParams::Mode::PreEvolution);
+
+    if (generating_pre_evolution_ic || ic_mode == "fourier")
+    {
+        // Fourier-mode initial conditions (conventions.md sec.7): modes
+        // occupied for |k| <= k_max, zero above, normalised to a target
+        // mean-square variance. Pi1 = Pi2 = 0 (displacement-only ICs --
+        // conventions.md does not specify a Pi variance, only psi's).
+        const std::string prefix = generating_pre_evolution_ic
+                                       ? "axion_strings.pre_evolution"
+                                       : "axion_strings";
+        const auto fourier_params =
+            AxionStringsParams::read_fourier_ic_params(prefix);
+
+        const amrex::Real m_r =
+            generating_pre_evolution_ic
+                ? std::sqrt(s_pre_background.lambda(0.0))
+                : std::sqrt(s_background.lambda(s_tau_i));
+        const amrex::Real dx = Geom().CellSize(0);
+        const double k_max_cells = fourier_params.k_max_over_mr * m_r * dx;
+
+        amrex::MultiFab &state_new = get_new_data(state_index);
+        amrex::MultiFab psi1_mf(state_new.boxArray(),
+                                state_new.DistributionMap(), 1, 0);
+        amrex::MultiFab psi2_mf(state_new.boxArray(),
+                                state_new.DistributionMap(), 1, 0);
+        FourierIC::generate(psi1_mf, Geom(), k_max_cells,
+                           fourier_params.mean_square_variance,
+                           fourier_params.seed, 0);
+        FourierIC::generate(psi2_mf, Geom(), k_max_cells,
+                           fourier_params.mean_square_variance,
+                           fourier_params.seed, 1);
+
+        amrex::MultiFab::Copy(state_new, psi1_mf, 0, c_psi1, 1, 0);
+        amrex::MultiFab::Copy(state_new, psi2_mf, 0, c_psi2, 1, 0);
+        state_new.setVal(0.0, c_Pi1, 2, 0);
+        state_new.FillBoundary(Geom().periodicity());
+        return;
+    }
+
     // Placeholder initial data (superseded by the Fourier-mode + pre-
     // evolution generator of milestone-1.md task 1.5): the homogeneous
     // configuration psi1 = R(tau), psi2 = 0. Since |psi|^2 - R^2 vanishes
@@ -115,12 +166,26 @@ void AxionStringsLevel::specific_eval_rhs(amrex::MultiFab &a_soln,
 {
     BL_PROFILE("AxionStringsLevel::specific_eval_rhs()");
 
-    const amrex::Real tau = s_tau_i + a_time;
-    const amrex::Real curvature_coeff =
-        s_background.curvature_term_coeff(tau);
-    const amrex::Real lambda    = s_background.lambda(tau);
-    const amrex::Real R_val     = s_background.R(tau);
-    const amrex::Real R_squared = R_val * R_val;
+    amrex::Real curvature_coeff{};
+    amrex::Real lambda{};
+    amrex::Real R_squared{};
+    if (s_mode == AxionStringsParams::Mode::PreEvolution)
+    {
+        // Pre-evolution's own clock starts at a_time = 0 = tau_pre.
+        const amrex::Real tau_pre = a_time;
+        curvature_coeff = s_pre_background.curvature_term_coeff(tau_pre);
+        lambda           = s_pre_background.lambda(tau_pre);
+        const amrex::Real R_val = s_pre_background.R(tau_pre);
+        R_squared               = R_val * R_val;
+    }
+    else
+    {
+        const amrex::Real tau = s_tau_i + a_time;
+        curvature_coeff        = s_background.curvature_term_coeff(tau);
+        lambda                 = s_background.lambda(tau);
+        const amrex::Real R_val = s_background.R(tau);
+        R_squared               = R_val * R_val;
+    }
 
     const auto dx                 = Geom().CellSize(0);
     const auto &const_soln_arrays = a_soln.const_arrays();
@@ -142,6 +207,68 @@ void AxionStringsLevel::specific_post_timestep()
     // scalars are a global (not per-level) diagnostic in any case.
     if (Level() != 0)
     {
+        return;
+    }
+
+    if (s_mode == AxionStringsParams::Mode::PreEvolution)
+    {
+        // xi-monitoring stopping loop (conventions.md sec.7, task 1.5).
+        // Measuring xi means a plaquette count over the whole grid, which
+        // is not cheap -- check on an adaptive cadence: coarse while xi is
+        // far from the target, tightening as it gets close (user request).
+        ++s_steps_since_xi_check;
+        if (s_steps_since_xi_check < s_xi_check_interval)
+        {
+            return;
+        }
+        s_steps_since_xi_check = 0;
+
+        amrex::MultiFab &pre_state = get_new_data(state_index);
+        pre_state.FillBoundary(Geom().periodicity());
+        const PlaquetteCounts counts = count_plaquettes(pre_state);
+
+        const amrex::Real tau_pre = get_state_data(state_index).curTime();
+        const double dx           = Geom().CellSize(0);
+        const double L_tilde      = Geom().ProbLength(0);
+        // xi is measured at tau = tau_i (the main run's start -- the
+        // physical instant this pre-evolution state represents once
+        // handed off), not tau_pre (confirmed with the user).
+        const double xi = xi_from_plaquette_count(
+            static_cast<double>(counts.n_p_plain), dx, L_tilde,
+            s_background.a_inv, s_tau_i);
+        const double ratio = xi / s_xi_target;
+
+        amrex::Print() << "  [AxionStrings pre-evolution] tau_pre = "
+                       << tau_pre << "  N_p = " << counts.n_p_plain
+                       << "  xi(at tau_i) = " << xi
+                       << "  target = " << s_xi_target
+                       << "  ratio = " << ratio << "\n";
+
+        // xi generally decreases during relaxation (user's observation):
+        // stop the first time it drops to the target rather than waiting
+        // for an exact match.
+        if (ratio <= 1.0)
+        {
+            amrex::Print()
+                << "  [AxionStrings pre-evolution] target xi reached -- "
+                   "stopping (a checkpoint is written once the time-"
+                   "stepping loop exits).\n";
+            s_pre_evolution_target_reached = true;
+            return;
+        }
+
+        if (ratio <= s_xi_cadence.fine_threshold)
+        {
+            s_xi_check_interval = s_xi_cadence.fine_interval;
+        }
+        else if (ratio <= s_xi_cadence.medium_threshold)
+        {
+            s_xi_check_interval = s_xi_cadence.medium_interval;
+        }
+        else
+        {
+            s_xi_check_interval = s_xi_cadence.coarse_interval;
+        }
         return;
     }
 
@@ -217,5 +344,77 @@ void AxionStringsLevel::tag_cells(amrex::TagBoxArray &tags,
     amrex::ParallelFor(tags,
                        [=] AMREX_GPU_DEVICE(int box_no, int ix, int iy, int iz)
                        { my_tagging_criterion(ix, iy, iz, tag_arrs[box_no]); });
+    amrex::Gpu::streamSynchronize();
+}
+
+int AxionStringsLevel::okToContinue()
+{
+    if (s_mode == AxionStringsParams::Mode::PreEvolution &&
+        s_pre_evolution_target_reached)
+    {
+        return 0;
+    }
+    return 1;
+}
+
+void AxionStringsLevel::specific_post_restart()
+{
+    // Pre-evolution -> main handoff (conventions.md sec.7): only on the one
+    // restart command that performs it, flagged explicitly so a later,
+    // ordinary restart of the main run's own progress does not re-apply
+    // the rescale (see AxionStringsParams::read_restart_from_pre_evolution).
+    if (s_mode != AxionStringsParams::Mode::Main ||
+        !AxionStringsParams::read_restart_from_pre_evolution())
+    {
+        return;
+    }
+
+    // Pre-evolution's own clock (tau_pre) starts at 0, so whatever a_time
+    // the checkpoint recorded *is* tau_pre at handoff.
+    const amrex::Real tau_pre_end = get_state_data(state_index).curTime();
+
+    const amrex::Real R_pre        = s_pre_background.R(tau_pre_end);
+    const amrex::Real R_pre_prime  = s_pre_background.R_prime(tau_pre_end);
+    const amrex::Real R_main       = s_background.R(s_tau_i);
+    const amrex::Real R_main_prime = s_background.R_prime(s_tau_i);
+    const amrex::Real kappa        = R_main / R_pre;
+    const amrex::Real common_term  = R_main_prime - kappa * kappa * R_pre_prime;
+
+    if (Level() == 0)
+    {
+        amrex::Print() << "  [AxionStrings] pre-evolution -> main handoff: "
+                       << "tau_pre_end = " << tau_pre_end
+                       << ", R_pre = " << R_pre
+                       << ", R_main(tau_i) = " << R_main
+                       << ", kappa = " << kappa << "\n";
+    }
+
+    // a_time continues counting up from wherever the checkpoint's clock
+    // left off (it does not reset to 0), so s_tau_i must absorb that
+    // offset for tau = s_tau_i + a_time to still equal tau_i right now.
+    s_tau_i = s_tau_i - tau_pre_end;
+
+    for (amrex::MultiFab *mf :
+        {&get_new_data(state_index), &get_old_data(state_index)})
+    {
+        auto const &arrs = mf->arrays();
+        amrex::ParallelFor(
+            *mf, mf->nGrowVect(),
+            [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept
+            {
+                auto &a                    = arrs[box_no];
+                const amrex::Real psi1_pre = a(i, j, k, c_psi1);
+                const amrex::Real psi2_pre = a(i, j, k, c_psi2);
+                const amrex::Real Pi1_pre  = a(i, j, k, c_Pi1);
+                const amrex::Real Pi2_pre  = a(i, j, k, c_Pi2);
+
+                a(i, j, k, c_psi1) = kappa * psi1_pre;
+                a(i, j, k, c_psi2) = kappa * psi2_pre;
+                a(i, j, k, c_Pi1) =
+                    kappa * kappa * Pi1_pre + (psi1_pre / R_pre) * common_term;
+                a(i, j, k, c_Pi2) =
+                    kappa * kappa * Pi2_pre + (psi2_pre / R_pre) * common_term;
+            });
+    }
     amrex::Gpu::streamSynchronize();
 }

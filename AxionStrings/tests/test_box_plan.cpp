@@ -56,6 +56,31 @@ TEST_CASE("General box plan reproduces N1, N2 at tau_f, for fat (c=1)")
     CHECK(1.0 / (dx_physical * m_r) == doctest::Approx(N2).epsilon(1.0e-9));
 }
 
+TEST_CASE("pre_evolution_L_tilde matches conventions.md sec.7 by hand")
+{
+    const double L_tilde_main = 10.0;
+    const double a_inv        = 2.0;
+    const double c            = 1.0;
+    const double tau_i        = 4.0;
+
+    // L_init = L_main * 1/(a_inv-1) * (tau_i/tau0)^((1-c)/(a_inv-1))
+    //        = 10 * 1 * (4)^0 = 10, since c=1 makes the exponent 0.
+    CHECK(pre_evolution_L_tilde(L_tilde_main, a_inv, c, tau_i) ==
+          doctest::Approx(10.0).epsilon(1.0e-12));
+}
+
+TEST_CASE("pre_evolution_L_tilde exponent behaves for c != 1")
+{
+    const double L_tilde_main = 10.0;
+    const double a_inv        = 2.0;
+    const double c            = 0.0;
+    const double tau_i        = 4.0;
+
+    // exponent = (1-0)/(2-1) = 1, so L_init = 10 * 1 * 4^1 = 40
+    CHECK(pre_evolution_L_tilde(L_tilde_main, a_inv, c, tau_i) ==
+          doctest::Approx(40.0).epsilon(1.0e-12));
+}
+
 TEST_CASE("Moore dynamic range formula matches its algebraic inverse")
 {
     // N = N2 * N1 * gamma * exp(D/2) <=> D = 2 log(N/(N2 N1 gamma))

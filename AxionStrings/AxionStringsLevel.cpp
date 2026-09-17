@@ -1,6 +1,7 @@
 #include "AxionStringsLevel.hpp"
 #include "AxionStringsParams.hpp"
 #include "AxionStringsRHS.hpp"
+#include "EnergyKernel.hpp"
 #include "FixedGridsTagger.hpp"
 #include "FourierIC.hpp"
 #include "SmallDataIO.hpp"
@@ -25,6 +26,11 @@ void AxionStringsLevel::variableSetUp()
         s_xi_target       = AxionStringsParams::read_xi_target();
         s_xi_cadence       = AxionStringsParams::read_xi_check_cadence();
         s_xi_check_interval = s_xi_cadence.coarse_interval;
+    }
+    else
+    {
+        s_energy_masking =
+            AxionStringsParams::read_masking_params("axion_strings.masking");
     }
 }
 
@@ -301,12 +307,35 @@ void AxionStringsLevel::specific_post_timestep()
         s_background.H_over_mr_closed_form(tau);
     const amrex::Real m_r_over_h = 1.0 / h_over_mr_direct;
 
+    // Energy (conventions.md sec.10, milestone-1.md task 1.8): rho_tot
+    // (the sec.10 aggregate formula only -- the sec.12 radial/axion/
+    // interaction split is not yet implemented, see docs/STATUS.md) and the
+    // axion kinetic energy, both screened and unscreened. FourthOrder-
+    // Derivatives::diff1 needs a 2-cell-wide stencil; the FillBoundary
+    // above already covers it (state's ghost count is >=3 by default, for
+    // the 4th-order Laplacian in the RHS).
+    const amrex::Real lambda = s_background.lambda(tau);
+    const long n_cells_total = Geom().Domain().numPts();
+    const TotalEnergyResult energy =
+        compute_total_energy(state_new, dx, s_background.R(tau), lambda,
+                             s_background.b_inv, tau, s_energy_masking,
+                             n_cells_total);
+
     amrex::Print() << "  [AxionStrings] tau = " << tau
                    << "  N_p = " << counts.n_p_plain
                    << "  N_p_W = " << counts.n_p_weighted
                    << "  xi = " << xi_plain << "  xi_W = " << xi_weighted
                    << "  m_r/H (direct) = " << m_r_over_h
                    << "  m_r/H (closed form) = " << 1.0 / h_over_mr_closed
+                   << "\n"
+                   << "    rho_tot: unscreened = " << energy.rho_tot_unscreened
+                   << "  screened = " << energy.rho_tot_screened
+                   << "  diff (string) = "
+                   << (energy.rho_tot_unscreened - energy.rho_tot_screened)
+                   << "\n"
+                   << "    rho_axion_kin: unscreened = "
+                   << energy.rho_axion_kinetic_unscreened
+                   << "  screened = " << energy.rho_axion_kinetic_screened
                    << "\n";
 
     const amrex::Real dt =
@@ -316,14 +345,21 @@ void AxionStringsLevel::specific_post_timestep()
     if (!s_wrote_network_scalars_header)
     {
         network_scalars_file.write_header_line(
-            {"N_p", "N_p_weighted", "xi", "xi_weighted", "m_r_over_H"});
+            {"N_p", "N_p_weighted", "xi", "xi_weighted", "m_r_over_H",
+             "rho_tot_unscreened", "rho_tot_screened",
+             "rho_axion_kin_unscreened", "rho_axion_kin_screened"});
         s_wrote_network_scalars_header = true;
     }
     const std::vector<amrex::Real> data_row{
         static_cast<amrex::Real>(counts.n_p_plain),
         static_cast<amrex::Real>(counts.n_p_weighted),
         static_cast<amrex::Real>(xi_plain),
-        static_cast<amrex::Real>(xi_weighted), m_r_over_h};
+        static_cast<amrex::Real>(xi_weighted),
+        m_r_over_h,
+        static_cast<amrex::Real>(energy.rho_tot_unscreened),
+        static_cast<amrex::Real>(energy.rho_tot_screened),
+        static_cast<amrex::Real>(energy.rho_axion_kinetic_unscreened),
+        static_cast<amrex::Real>(energy.rho_axion_kinetic_screened)};
     network_scalars_file.write_time_data_line(data_row);
 }
 

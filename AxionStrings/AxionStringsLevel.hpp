@@ -5,6 +5,7 @@
 #include "Background.hpp"
 #include "DefaultLevelBld.hpp"
 #include "GRAmrLevel.hpp"
+#include "Masking.hpp"
 #include "PreEvolutionBackground.hpp"
 
 class AxionStringsLevel : public GRAmrLevel
@@ -61,6 +62,10 @@ class AxionStringsLevel : public GRAmrLevel
 
     // Whether the network_scalars.dat header has been written yet.
     inline static bool s_wrote_network_scalars_header{false};
+
+    // Screening used for the energy diagnostics (task 1.8) -- a runtime
+    // parameter, never a compile-time constant (CLAUDE.md constraint 4).
+    inline static MaskingParams s_energy_masking{};
 
   private:
 

@@ -12,6 +12,7 @@
 #include "Background.hpp"
 #include "BoxPlan.hpp"
 #include "GRParmParse.hpp"
+#include "Masking.hpp"
 #include "PreEvolutionBackground.hpp"
 
 #include <array>
@@ -210,6 +211,45 @@ inline XiCheckCadence read_xi_check_cadence()
                 "must have 1 < check_threshold_fine < check_threshold_medium");
     }
     return cadence;
+}
+
+// Masking (conventions.md sec.10, milestone-1.md task 1.7). The threshold
+// is a runtime parameter, never a compile-time constant (CLAUDE.md
+// constraint 4) -- it will be scanned; conventions.md sec.10/sec.14 record
+// 0.8, 0.9 and 0.95 all having been tried without reconciliation, so no
+// value here should be read as settled.
+inline MaskingParams read_masking_params(const std::string &prefix)
+{
+    GRParmParse pp(prefix);
+    MaskingParams params{};
+
+    std::string scheme = "A";
+    pp.queryAdd("scheme", scheme);
+    if (scheme == "none" || scheme == "None")
+    {
+        params.scheme = MaskingScheme::None;
+    }
+    else if (scheme == "A")
+    {
+        params.scheme = MaskingScheme::A;
+    }
+    else if (scheme == "B")
+    {
+        params.scheme = MaskingScheme::B;
+    }
+    else
+    {
+        pp.error("scheme", "must be \"A\", \"B\" or \"none\"");
+    }
+
+    pp.queryAdd("threshold", params.threshold);
+    if (params.scheme == MaskingScheme::B &&
+        (params.threshold <= 0.0 || params.threshold >= 1.0))
+    {
+        pp.error("threshold", "must be in (0, 1) for scheme B");
+    }
+
+    return params;
 }
 
 // Box planning (conventions.md sec.5, milestone-1.md task 1.4). Skipped

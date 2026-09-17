@@ -82,4 +82,20 @@ axion_kinetic_energy_pointwise(double theta_prime, double R)
     return 0.5 * a_dot * a_dot;
 }
 
+// Axion gradient energy density, conventions.md sec.12's "Axion: gradient
+// 1/2 (grad a)^2": a = f_a theta, and grad(a) (physical) = f_a
+// grad(theta)/R (theta is a pure phase, so its physical gradient picks up
+// only one power of 1/R relative to the comoving grad(theta) -- unlike
+// psi's amplitude, which picks up two, sec.3: "grad now the comoving
+// gradient"). grad(theta) in comoving direction d is
+// (psi1 d_d(psi2) - psi2 d_d(psi1))/|psi|^2, the spatial analogue of the
+// theta' identity used above; takes the already-summed comoving
+// |grad(theta)|^2 rather than recomputing it component by component.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE double
+axion_gradient_energy_pointwise(double grad_theta_sq_comoving, double R)
+{
+    constexpr double f_a = 1.4142135623730951; // sqrt(2) v, v = 1
+    return 0.5 * f_a * f_a * grad_theta_sq_comoving / (R * R);
+}
+
 #endif // ENERGY_HPP_

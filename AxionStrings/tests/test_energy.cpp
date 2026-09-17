@@ -36,3 +36,18 @@ TEST_CASE("axion_kinetic_energy_pointwise is exactly zero when theta' = 0")
 {
     CHECK(axion_kinetic_energy_pointwise(0.0, 2.0) == 0.0);
 }
+
+TEST_CASE("axion_gradient_energy_pointwise is exactly zero when grad(theta) "
+          "= 0")
+{
+    CHECK(axion_gradient_energy_pointwise(0.0, 2.0) == 0.0);
+}
+
+TEST_CASE("axion_gradient_energy_pointwise scales as 1/R^2 at fixed "
+          "comoving grad(theta)")
+{
+    const double grad_theta_sq = 1.3;
+    const double e1            = axion_gradient_energy_pointwise(grad_theta_sq, 1.0);
+    const double e2            = axion_gradient_energy_pointwise(grad_theta_sq, 2.0);
+    CHECK(e1 / e2 == doctest::Approx(4.0).epsilon(1.0e-12));
+}

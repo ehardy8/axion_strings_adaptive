@@ -357,6 +357,35 @@ void AxionStringsLevel::specific_post_timestep()
                              s_background.b_inv, tau, s_energy_masking,
                              n_cells_total);
 
+    // Core-energy diagnostics (2026-09-17, with the user): the screened/
+    // unscreened *difference* of averages is diluted by the masked
+    // point-count fraction (n_unmasked/n_total) and is not itself "the
+    // string energy". The energy actually sitting in the masked (core)
+    // cells is instead Sum_core rho = Sum_all rho - Sum_unmasked rho =
+    // n_total*unscreened_avg - n_unmasked*screened_avg. For a *static*
+    // string, adding the away-from-core (axion_gradient - axion_kinetic)
+    // contribution approximately removes propagating axion wave energy
+    // too: a free wave has equal kinetic/gradient energy on average, so
+    // that difference cancels the wave's contribution and leaves only the
+    // string's own static long-range tail. Printed here as a convenience,
+    // interactive-use diagnostic only -- not saved to network_scalars.dat,
+    // since the point of saving every raw screened/unscreened component
+    // (below) is to let this and any other combination be reconstructed
+    // afterwards without having picked one formula in advance.
+    const double sum_core_rho_tot =
+        energy.n_total * energy.rho_tot_unscreened -
+        energy.n_unmasked * energy.rho_tot_screened;
+    const double sum_unmasked_tail =
+        energy.n_unmasked * (energy.rho_axion_gradient_screened -
+                             energy.rho_axion_kinetic_screened);
+    const double dx3 = dx * dx * dx;
+    // 2 strings (vortex/antivortex pair), each spanning the full box in z.
+    const double string_length_in_box = 2.0 * Geom().ProbLength(2);
+    const double tension_core_only =
+        sum_core_rho_tot * dx3 / string_length_in_box;
+    const double tension_core_plus_tail =
+        (sum_core_rho_tot + sum_unmasked_tail) * dx3 / string_length_in_box;
+
     amrex::Print() << "  [AxionStrings] tau = " << tau
                    << "  N_p = " << counts.n_p_plain
                    << "  N_p_W = " << counts.n_p_weighted
@@ -365,13 +394,19 @@ void AxionStringsLevel::specific_post_timestep()
                    << "  m_r/H (closed form) = " << 1.0 / h_over_mr_closed
                    << "\n"
                    << "    rho_tot: unscreened = " << energy.rho_tot_unscreened
-                   << "  screened = " << energy.rho_tot_screened
-                   << "  diff (string) = "
-                   << (energy.rho_tot_unscreened - energy.rho_tot_screened)
-                   << "\n"
+                   << "  screened = " << energy.rho_tot_screened << "\n"
                    << "    rho_axion_kin: unscreened = "
                    << energy.rho_axion_kinetic_unscreened
                    << "  screened = " << energy.rho_axion_kinetic_screened
+                   << "\n"
+                   << "    rho_axion_grad: unscreened = "
+                   << energy.rho_axion_gradient_unscreened
+                   << "  screened = " << energy.rho_axion_gradient_screened
+                   << "\n"
+                   << "    n_total = " << energy.n_total
+                   << "  n_unmasked = " << energy.n_unmasked
+                   << "  tension (core only) = " << tension_core_only
+                   << "  tension (core+tail) = " << tension_core_plus_tail
                    << "\n";
 
     const amrex::Real dt =
@@ -383,7 +418,9 @@ void AxionStringsLevel::specific_post_timestep()
         network_scalars_file.write_header_line(
             {"N_p", "N_p_weighted", "xi", "xi_weighted", "m_r_over_H",
              "rho_tot_unscreened", "rho_tot_screened",
-             "rho_axion_kin_unscreened", "rho_axion_kin_screened"});
+             "rho_axion_kin_unscreened", "rho_axion_kin_screened",
+             "rho_axion_grad_unscreened", "rho_axion_grad_screened",
+             "n_total", "n_unmasked"});
         s_wrote_network_scalars_header = true;
     }
     const std::vector<amrex::Real> data_row{
@@ -395,7 +432,11 @@ void AxionStringsLevel::specific_post_timestep()
         static_cast<amrex::Real>(energy.rho_tot_unscreened),
         static_cast<amrex::Real>(energy.rho_tot_screened),
         static_cast<amrex::Real>(energy.rho_axion_kinetic_unscreened),
-        static_cast<amrex::Real>(energy.rho_axion_kinetic_screened)};
+        static_cast<amrex::Real>(energy.rho_axion_kinetic_screened),
+        static_cast<amrex::Real>(energy.rho_axion_gradient_unscreened),
+        static_cast<amrex::Real>(energy.rho_axion_gradient_screened),
+        static_cast<amrex::Real>(energy.n_total),
+        static_cast<amrex::Real>(energy.n_unmasked)};
     network_scalars_file.write_time_data_line(data_row);
 }
 

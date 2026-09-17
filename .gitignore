@@ -11,6 +11,8 @@ plt*/
 chk*/
 *.hdf5
 *.h5
+network_scalars.dat
+parameters_and_version.txt
 
 # macOS
 .DS_Store

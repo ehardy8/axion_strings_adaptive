@@ -58,16 +58,16 @@ string, `1 + b_inv` = Moore; `b_inv = 1` in radiation domination, so `c0=2`):
 ## Unit tests
 
 `Background.hpp`, `BoxPlan.hpp`, `XiFormula.hpp`, `PlaquetteWinding.hpp`,
-`PreEvolutionBackground.hpp`, `Masking.hpp` and `Energy.hpp` are
-deliberately independent of AMReX, so their tests build and run in seconds
-with no MPI/AMReX dependency:
+`PreEvolutionBackground.hpp`, `Masking.hpp`, `Energy.hpp` and `Velocity.hpp`
+are deliberately independent of AMReX, so their tests build and run in
+seconds with no MPI/AMReX dependency:
 
 ```bash
 cd AxionStrings/tests
 clang++ -std=c++20 -O1 -I ../../GRTeclyn/external/doctest \
     test_background.cpp test_box_plan.cpp test_xi_formula.cpp \
     test_plaquette_winding.cpp test_pre_evolution_background.cpp \
-    test_masking.cpp test_energy.cpp \
+    test_masking.cpp test_energy.cpp test_velocity.cpp \
     -o /tmp/test_all
 /tmp/test_all
 ```

@@ -10,6 +10,7 @@
 #include "StateTypes.hpp"
 #include "StateVariables.hpp"
 #include "StringFinder.hpp"
+#include "VelocityKernel.hpp"
 #include "XiFormula.hpp"
 
 void AxionStringsLevel::variableSetUp()
@@ -453,6 +454,19 @@ void AxionStringsLevel::specific_post_timestep()
                              s_background.b_inv, tau, s_energy_masking,
                              n_cells_total);
 
+    // String velocities (conventions.md sec.8, milestone-1.md task 1.10 --
+    // velocities only, not curvature or loops, both deferred as more
+    // involved per the user). gamma^2 v^2 evaluated at the corners of
+    // every pierced plaquette, averaged over the network.
+    const amrex::Real m_r_now = std::sqrt(lambda);
+    const VelocityResult velocity = compute_velocity_at_pierced_corners(
+        state_new, s_background.R(tau), tau, s_background.b_inv, m_r_now);
+    const double mean_gamma_sq_v_sq =
+        (velocity.count > 0)
+            ? velocity.sum_gamma_sq_v_sq / static_cast<double>(velocity.count)
+            : 0.0;
+    const double mean_gamma = std::sqrt(1.0 + mean_gamma_sq_v_sq);
+
     // Core-energy diagnostics (2026-09-17, with the user): the screened/
     // unscreened *difference* of averages is diluted by the masked
     // point-count fraction (n_unmasked/n_total) and is not itself "the
@@ -503,7 +517,10 @@ void AxionStringsLevel::specific_post_timestep()
                    << "  n_unmasked = " << energy.n_unmasked
                    << "  tension (core only) = " << tension_core_only
                    << "  tension (core+tail) = " << tension_core_plus_tail
-                   << "\n";
+                   << "\n"
+                   << "    <gamma^2 v^2> = " << mean_gamma_sq_v_sq
+                   << "  <gamma> = " << mean_gamma
+                   << "  N_corners = " << velocity.count << "\n";
 
     const amrex::Real dt =
         a_time_now - get_state_data(state_index).prevTime();
@@ -516,7 +533,8 @@ void AxionStringsLevel::specific_post_timestep()
              "rho_tot_unscreened", "rho_tot_screened",
              "rho_axion_kin_unscreened", "rho_axion_kin_screened",
              "rho_axion_grad_unscreened", "rho_axion_grad_screened",
-             "n_total", "n_unmasked"});
+             "n_total", "n_unmasked", "mean_gamma_sq_v_sq", "mean_gamma",
+             "n_velocity_corners"});
         s_wrote_network_scalars_header = true;
     }
     const std::vector<amrex::Real> data_row{
@@ -532,7 +550,10 @@ void AxionStringsLevel::specific_post_timestep()
         static_cast<amrex::Real>(energy.rho_axion_gradient_unscreened),
         static_cast<amrex::Real>(energy.rho_axion_gradient_screened),
         static_cast<amrex::Real>(energy.n_total),
-        static_cast<amrex::Real>(energy.n_unmasked)};
+        static_cast<amrex::Real>(energy.n_unmasked),
+        static_cast<amrex::Real>(mean_gamma_sq_v_sq),
+        static_cast<amrex::Real>(mean_gamma),
+        static_cast<amrex::Real>(velocity.count)};
     network_scalars_file.write_time_data_line(data_row);
 
     // Spectrum (conventions.md sec.9/sec.12, milestone-1.md task 1.9):

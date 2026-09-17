@@ -1,15 +1,38 @@
 #ifndef ENERGY_HPP_
 #define ENERGY_HPP_
 
-// Total energy density of conventions.md sec.10:
-//   rho_tot = R^-2 v^2 <|psi_dot - psi/(b_inv tau)|^2 + |grad psi|^2
-//             + (lambda v^2/4R^2)(|psi|^2-R^2)^2>
-// with v=1 in code units (sec.5), "psi_dot" read as Pi = dpsi/dtau (the
-// evolved state variable -- sec.3's derivation of this formula starts from
-// phi' = (v/R)(Pi - psi/(b_inv tau)), so this is what the symbol must mean
-// here). Pointwise (pre-averaging) formula only, AMReX-free like
-// Background.hpp; the AMReX-side gradient computation and spatial
-// reduction live in EnergyKernel.hpp.
+// Total energy density: re-derived from scratch (2026-09-17, with the
+// user) rather than taken literally from conventions.md sec.10, after
+// finding what appears to be a factor-of-R^2 error in the kinetic/gradient
+// terms there. Starting point, confirmed with the user: a canonically
+// normalised COMPLEX scalar has NO 1/2 on its kinetic/gradient terms
+// (unlike a real scalar) -- checked directly by matching
+// L = A|phi_dot|^2 - A|grad phi|^2/R^2 - V(phi) against sec.3's given EOM
+// (phi_ddot - grad^2(phi)/R^2 + (lambda/2)phi(|phi|^2-v^2) = 0) via
+// d/dt(dL/d(phi_dot)*) = dV/dphi*, which forces A=1 exactly (a factor A=1/2
+// would instead require the EOM's potential-derivative coefficient to be
+// lambda, not lambda/2). So the physical energy density is
+//   rho = |phi_dot|^2 + |grad phi|^2/R^2 + V(phi),   phi_dot = d(phi)/dt.
+//
+// Converting to psi = R phi/v and conformal time tau (Pi = d(psi)/d(tau)):
+// phi = v psi/R, and using dt = R dtau and R'/R = 1/(b_inv tau) (sec.5):
+//   d(phi)/d(tau) = (v/R)(Pi - psi/(b_inv tau))              [conformal]
+//   phi_dot = [d(phi)/d(tau)]/R = (v/R^2)(Pi - psi/(b_inv tau))
+// (checked three independent ways: direct algebra, this formula, and
+// re-parametrising by t(tau) directly -- all agree). So
+//   |phi_dot|^2 = (v^2/R^4)|Pi - psi/(b_inv tau)|^2,
+// i.e. R^-4, not conventions.md's literal R^-2. The gradient term picks up
+// the same extra 1/R^2 (grad_physical = grad_comoving/R, sec.3: "grad now
+// the comoving gradient"), so it is R^-4 too. The potential term, once
+// fully expanded, is identical either way:
+//   V(phi) = (lambda/4)(|phi|^2-v^2)^2 = (lambda v^4)/(4R^4)(|psi|^2-R^2)^2
+// -- conventions.md's literal formula and this derivation agree on the
+// potential term exactly; only the kinetic/gradient terms differ, by R^2.
+// v=1 in code units (sec.5).
+//
+// Pointwise (pre-averaging) formula only, AMReX-free like Background.hpp;
+// the AMReX-side gradient computation and spatial reduction live in
+// EnergyKernel.hpp.
 //
 // This is the *aggregate* formula only -- conventions.md sec.12 lists names
 // for a full radial/axion/interaction decomposition (radial kinetic/
@@ -36,10 +59,11 @@ rho_tot_pointwise(double psi1, double psi2, double Pi1, double Pi2,
     const double gradient = grad_psi1_sq + grad_psi2_sq;
 
     const double psi_sq_minus_R_sq = psi1 * psi1 + psi2 * psi2 - R * R;
-    const double potential = (lambda / (4.0 * R * R)) * psi_sq_minus_R_sq *
-                             psi_sq_minus_R_sq;
+    const double potential =
+        0.25 * lambda * psi_sq_minus_R_sq * psi_sq_minus_R_sq;
 
-    return (kinetic + gradient + potential) / (R * R);
+    const double R2 = R * R;
+    return (kinetic + gradient + potential) / (R2 * R2);
 }
 
 // Axion kinetic energy density, conventions.md sec.12's "Axion: kinetic

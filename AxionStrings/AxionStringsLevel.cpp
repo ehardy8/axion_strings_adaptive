@@ -53,12 +53,28 @@ void AxionStringsLevel::initData()
         // -- a compensating antivortex, well separated from both the vortex
         // and the box edges, is what a periodic domain actually requires.
         // Offset by half a cell from grid points so no vertex sits exactly
-        // on a (phase-undefined) core. The radial profile is a plain tanh,
-        // not the exact equilibrium profile of sec.13 -- irrelevant here,
-        // since plaquette detection depends only on the phase.
+        // on a (phase-undefined) core.
+        //
+        // Radial profile g(rho) = rho_hat/sqrt(rho_hat^2+2), rho_hat =
+        // m_r*rho: an approximation to sec.13's true equilibrium profile,
+        // not exact (its near-core slope is 1/sqrt(2) =~ 0.707, not the
+        // exact c1 = 0.41222), but with the *same functional form* at both
+        // ends -- linear near the core, and g = 1/sqrt(1+2/rho_hat^2)
+        // =~ 1 - 1/rho_hat^2 far away, matching sec.13's stated "1 - rho^-2"
+        // asymptote exactly. This matters: an earlier attempt used tanh,
+        // which decays to vacuum *exponentially* rather than as a power
+        // law, and so is missing essentially all of the long-range
+        // Goldstone tail that is responsible for the string's logarithmic
+        // tension divergence in the first place -- for task 1.8's tension
+        // test specifically, that tail is the point, not a detail. tanh
+        // also turned out to be far enough from equilibrium that the field
+        // "rang down" violently within a handful of steps (confirmed this
+        // wasn't a deeper bug: the exact homogeneous solution stays at
+        // exactly zero energy indefinitely under the same evolution code).
         const amrex::Real tau      = s_tau_i;
         const amrex::Real R_i      = s_background.R(tau);
         const amrex::Real m_r_test = std::sqrt(s_background.lambda(tau));
+        const amrex::Real bkg_b_inv = s_background.b_inv;
 
         std::array<amrex::Real, AMREX_SPACEDIM> center{};
         amrex::ParmParse().get("geometry.center", center);
@@ -87,13 +103,33 @@ void AxionStringsLevel::initData()
                     std::sqrt((x - x2) * (x - x2) + (y - y2) * (y - y2));
                 const amrex::Real theta =
                     std::atan2(y - y1, x - x1) - std::atan2(y - y2, x - x2);
-                const amrex::Real amp = R_i * std::tanh(m_r_test * rho1) *
-                                        std::tanh(m_r_test * rho2);
+                const amrex::Real rho1_hat = m_r_test * rho1;
+                const amrex::Real rho2_hat = m_r_test * rho2;
+                const amrex::Real g1 =
+                    rho1_hat / std::sqrt(rho1_hat * rho1_hat + 2.0);
+                const amrex::Real g2 =
+                    rho2_hat / std::sqrt(rho2_hat * rho2_hat + 2.0);
+                const amrex::Real amp  = R_i * g1 * g2;
+                const amrex::Real psi1 = amp * std::cos(theta);
+                const amrex::Real psi2 = amp * std::sin(theta);
 
-                arrs[box_no](i, j, k, c_psi1) = amp * std::cos(theta);
-                arrs[box_no](i, j, k, c_psi2) = amp * std::sin(theta);
-                arrs[box_no](i, j, k, c_Pi1)  = 0.0;
-                arrs[box_no](i, j, k, c_Pi2)  = 0.0;
+                arrs[box_no](i, j, k, c_psi1) = psi1;
+                arrs[box_no](i, j, k, c_psi2) = psi2;
+                // Pi = (R'/R) psi, NOT 0: a genuinely static (non-radiating)
+                // profile has a fixed *shape*, but psi's overall amplitude
+                // must still track the growing background R(tau) -- exactly
+                // like the homogeneous vacuum solution psi=R(tau) (tasks
+                // 1.2/1.3). Setting Pi=0 here was a real bug: it left the
+                // far field's |psi|/R decaying as R_i/R(tau) regardless of
+                // any string, dropping below a typical masking threshold
+                // within just 2-3 steps and collapsing the screened energy
+                // to zero -- confirmed numerically (R_i/R(1.3) = 0.77 < 0.8)
+                // to be exactly this effect, not a deeper bug (the exact
+                // homogeneous solution stays at exactly zero energy
+                // indefinitely under the same evolution code).
+                const amrex::Real R_prime_over_R = 1.0 / (bkg_b_inv * tau);
+                arrs[box_no](i, j, k, c_Pi1) = R_prime_over_R * psi1;
+                arrs[box_no](i, j, k, c_Pi2) = R_prime_over_R * psi2;
             });
         amrex::Gpu::streamSynchronize();
         return;

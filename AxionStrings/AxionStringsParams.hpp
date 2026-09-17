@@ -348,15 +348,31 @@ inline void apply_box_plan(const Background &background, double tau_i,
                       "<= tau_i; cannot evolve forward from tau_i");
     }
 
-    // L_tilde is the box this execution's geometry.prob_extent should
-    // match: the main run's own box in Mode::Main, or the (smaller,
-    // sec.7-converted) pre-evolution box in Mode::PreEvolution.
-    double L_tilde = plan.L_tilde;
+    // Decision (see docs/STATUS.md): pre-evolution uses the *same*
+    // geometry.prob_extent as the main run, not the sec.7 L_tilde_init
+    // formula's (generally different) value. Reasons: (1) AMReX's restart
+    // mechanism does not resize the domain -- verified directly -- so a
+    // differently-sized pre-evolution box could not actually be handed off
+    // via amr.restart without a custom regridding step nobody has designed
+    // yet; (2) the sec.7 formula only optimises pre-evolution's own
+    // resolution/box-size trade-off (it is computed without reference to
+    // the actual, a priori unknown, stopping time), while
+    // specific_post_restart's rescale (kappa, derived from the psi=R phi/v
+    // chain rule) already corrects the physical normalisation exactly,
+    // whatever box size was used -- so using L_tilde_main throughout costs
+    // nothing beyond a possibly-suboptimal (not incorrect) choice of
+    // pre-evolution resolution. L_tilde_init is still computed and printed
+    // here for reference/comparison, deliberately not acted on.
+    const double L_tilde = plan.L_tilde;
     if (mode == Mode::PreEvolution)
     {
-        L_tilde = pre_evolution_L_tilde(plan.L_tilde, a_inv, c, tau_i);
-        amrex::Print() << "  L_tilde (pre-evolution, sec.7) = " << L_tilde
-                       << "\n";
+        const double L_tilde_init_fyi =
+            pre_evolution_L_tilde(plan.L_tilde, a_inv, c, tau_i);
+        amrex::Print()
+            << "  L_tilde (pre-evolution, sec.7 formula, FYI only) = "
+            << L_tilde_init_fyi
+            << " -- NOT used; this run uses L_tilde_main = " << L_tilde
+            << " instead (see docs/STATUS.md)\n";
     }
 
     GRParmParse geom_pp("geometry");

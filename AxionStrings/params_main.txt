@@ -1,0 +1,92 @@
+# AxionStrings parameter file -- main run, continuing from
+# params_pre_evolution.txt's handoff checkpoint.
+#
+# Before running: replace amr.restart below with the actual checkpoint
+# path params_pre_evolution.txt produced (printed by that run, under
+# ./checkpoints/).
+
+#################################################
+# Filesystem parameters
+
+amr.verbose = 1
+# Full-grid outputs (plotfiles, routine checkpoints) off by default for
+# ensemble runs -- see docs/STATUS.md. Set >= 0 if you want to be able to
+# resume this specific run after a crash.
+amr.check_int = -1
+amr.plot_int  = -1
+
+# The pre-evolution -> main handoff: point this at the checkpoint
+# params_pre_evolution.txt produced, e.g.
+#   amr.restart = ./checkpoints/chk00123
+amr.restart = ./checkpoints/CHANGE_ME
+
+#################################################
+# Grid parameters -- derived by box planning below, same as
+# params_pre_evolution.txt (must match exactly for the restart to make
+# sense). Expect geometry.prob_extent = 512 512 512, amr.n_cell = 512 512
+# 512.
+
+amr.max_level = 0 # single-level throughout milestone 1
+
+# TODO: tune to your actual node/rank allocation (same note as
+# params_pre_evolution.txt).
+amr.max_grid_size   = 64
+amr.blocking_factor = 32
+amr.n_error_buf     = 1
+
+#################################################
+# Boundary condition parameters
+
+geometry.is_periodic = 1 1 1
+
+#################################################
+# Evolution parameters
+
+evolution.dt_multiplier = 0.2
+# evolution.stop_time is derived by box planning below (tau_f - tau_i =
+# 512 - 7.389 = 504.6) -- left unset here so it can be. No step cap: rely
+# on stop_time alone (a fresh crash-safety check_int, if you set one
+# above, would let you resume rather than needing max_steps as a backstop).
+evolution.max_steps = -1
+
+#################################################
+# AxionStrings parameters (conventions.md sec.2, 4, 5, 7)
+
+axion_strings.mode = main
+
+# Must match params_pre_evolution.txt exactly.
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 1.0
+axion_strings.log_mr_over_h_i = 2.0
+axion_strings.N  = 512
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+# Triggers the one-shot handoff rescale (AxionStringsLevel::
+# specific_post_restart) on this specific restart command. Do NOT set this
+# on a later, ordinary restart of this run's own progress (e.g. resuming
+# after a crash) -- it must only fire once.
+axion_strings.restart_from_pre_evolution = 1
+
+# Diagnostic output cadence (network_scalars.dat/axion_spectrum.dat/
+# axion_projection.dat, if enabled below): both required, no default fixed
+# in conventions.md. Starting at the same log(m_r/H) the run itself starts
+# at; 0.1 is a starting suggestion for the spacing, not a considered
+# choice -- adjust based on how much data you actually want to keep for a
+# run this long (~2500 steps end to end, per the box-planning numbers
+# above).
+axion_strings.output_first_log_mr_over_h = 2.0
+axion_strings.output_delta_log_mr_over_h = 0.1
+
+# Masking scheme for the energy/spectrum diagnostics (conventions.md
+# sec.10, task 1.7) -- defaults to scheme A (no top-hat) if left unset.
+# Set to B (with a threshold in (0,1)) if you want the screened energy/
+# tension numbers, or if you turn on axion_strings.compute_spectrum (that
+# requires scheme B).
+# axion_strings.masking.scheme    = B
+# axion_strings.masking.threshold = 0.8
+
+# Optional, off by default -- see docs/STATUS.md's output-infrastructure
+# entries.
+# axion_strings.compute_spectrum = 1
+# axion_strings.save_projection  = 1

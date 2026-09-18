@@ -123,6 +123,19 @@ Tracks progress against `milestone-1.md` task by task. Updated as work lands.
   across a switch. Worth resolving properly before the fat->Moore protocol
   (task 1.4+) needs a closed-form `log(m_r/H)` post-switch.
 
+- **Trap for `Mode::PreEvolution` configs: `evolution.stop_time` silently
+  defaults to `1.0` if left unset.** `apply_box_plan` deliberately does not
+  set it in pre-evolution mode (it stops via the xi-monitoring loop
+  instead, per sec.7) -- but GRTeclyn's own `BaseParameterChecker` (outside
+  our code, standard for every run) independently `queryAdd`s a `1.0`
+  default for it regardless. Found while validating
+  `params_pre_evolution.txt` (2026-09-18): a run with `stop_time` left
+  unset silently stopped at `t=1.0` rather than actually waiting for
+  `xi_target`, with no warning. Fix: set `evolution.stop_time = -1`
+  (unlimited, same convention as `evolution.max_steps = -1`) explicitly in
+  any pre-evolution config -- now done in `params_pre_evolution.txt`,
+  worth remembering for any future one.
+
 - Box planning in Moore mode (`apply_box_plan`) only runs the sec.5
   dynamic-range check; it does not derive `geometry.prob_extent` or
   `evolution.stop_time` the way the general (non-Moore) path does, since

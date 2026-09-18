@@ -54,8 +54,11 @@ axion_strings.a_inv = 2.0
 # c: 0 = physical, 1 = fat string, 1 + b_inv = Moore (= 2 in RD)
 axion_strings.c0 = 0.0
 
-# Conformal time at which the run starts (a_time = 0 here)
-axion_strings.tau_i = 1.0
+# log(m_r/H) at the start (a_time = 0 here); tau_i is derived from this
+# (2026-09-18, with the user: more physical than specifying a raw conformal
+# time directly). 0.0 here reproduces the old tau_i = 1.0 exactly, since
+# m_r = H = 1 at tau = tau0 = 1 for this a_inv/c0 combination.
+axion_strings.log_mr_over_h_i = 0.0
 
 # Diagnostic output cadence (2026-09-18, with the user): the full
 # per-snapshot diagnostics (plaquette count, energy/velocity reductions)

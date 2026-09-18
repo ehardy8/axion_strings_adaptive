@@ -86,19 +86,30 @@ inline Background read_background()
     return {a_inv, sched};
 }
 
-// Conformal time at which the AMReX clock (a_time = 0) begins. tau0 = 1 is
-// the fixed reference point where m_r = H (conventions.md sec.5); tau_i is
-// an independent run parameter picking where the simulation actually starts.
-inline double read_tau_i()
+// Conformal time at which the AMReX clock (a_time = 0) begins, derived from
+// the (more physical, 2026-09-18 with the user) run parameter
+// axion_strings.log_mr_over_h_i: log(m_r/H) at the start. tau0 = 1 is the
+// fixed reference point where m_r = H (conventions.md sec.5); tau_i is
+// wherever that ratio is instead. See Background::tau_from_log_mr_over_h
+// for the inversion and its no-switch-at-the-start caveat.
+inline double read_tau_i(const Background &background)
 {
     GRParmParse pp("axion_strings");
-    double tau_i = 1.0;
-    pp.get("tau_i", tau_i);
-    if (tau_i <= 0.0)
+    double log_mr_over_h_i{};
+    pp.get("log_mr_over_h_i", log_mr_over_h_i);
+
+    constexpr double tol = 1.0e-9;
+    if (std::abs(background.a_inv - background.c_sched.c0) < tol)
     {
-        pp.error("tau_i", "must be > 0 (conformal time must stay positive)");
+        pp.error(
+            "log_mr_over_h_i",
+            "cannot derive tau_i when axion_strings.c0 = a_inv (Moore mode "
+            "from the very start) -- H_over_mr_closed_form's exponent is "
+            "singular there; reach Moore only via a switch (axion_strings."
+            "c1/tau_switch), not as the starting c0");
     }
-    return tau_i;
+
+    return background.tau_from_log_mr_over_h(log_mr_over_h_i);
 }
 
 // Pre-evolution's own background (conventions.md sec.7, milestone-1.md
@@ -502,7 +513,7 @@ inline void check_params()
 {
     const Mode mode              = read_mode();
     const Background background = read_background();
-    const double tau_i          = read_tau_i();
+    const double tau_i          = read_tau_i(background);
     apply_box_plan(background, tau_i, mode);
 
     if (mode == Mode::PreEvolution)

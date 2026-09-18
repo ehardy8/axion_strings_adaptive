@@ -105,6 +105,23 @@ class Background
         const double m_r    = std::sqrt(lambda(tau));
         return hubble / m_r;
     }
+
+    // Inverse of H_over_mr_closed_form (2026-09-18, with the user: a more
+    // physical way to specify the main run's starting time than a raw
+    // conformal time tau_i): given log(m_r/H) at the start, returns the tau
+    // at which that ratio is first reached. Uses c_sched.c0 -- the value in
+    // effect at/before the start -- rather than c_sched.c(tau), both because
+    // that is what "the c at the start" means, and because
+    // H_over_mr_closed_form's own no-switch caveat applies here too (any
+    // switch is expected to happen after tau_i, not before it). Singular at
+    // c0 = a_inv (Moore mode from the very start, not reached via a switch)
+    // -- callers must check for that separately (AxionStringsParams::
+    // read_tau_i does).
+    [[nodiscard]] double tau_from_log_mr_over_h(double log_mr_over_h) const
+    {
+        const double c0 = c_sched.c0;
+        return tau0 * std::exp(log_mr_over_h * (a_inv - 1.0) / (a_inv - c0));
+    }
 };
 
 #endif // BACKGROUND_HPP_

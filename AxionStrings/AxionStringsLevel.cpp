@@ -22,7 +22,7 @@ void AxionStringsLevel::variableSetUp()
 
     s_mode       = AxionStringsParams::read_mode();
     s_background = AxionStringsParams::read_background();
-    s_tau_i      = AxionStringsParams::read_tau_i();
+    s_tau_i      = AxionStringsParams::read_tau_i(s_background);
 
     if (s_mode == AxionStringsParams::Mode::PreEvolution)
     {

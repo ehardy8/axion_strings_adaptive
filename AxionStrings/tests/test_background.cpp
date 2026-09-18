@@ -116,3 +116,41 @@ TEST_CASE("lambda(tau) reduces to the no-switch form before/without a switch")
                   .epsilon(tol));
     }
 }
+
+// tau_from_log_mr_over_h is the inverse of H_over_mr_closed_form -- a
+// physical way to specify the main run's starting time (log(m_r/H) at the
+// start) rather than a raw conformal time (2026-09-18, with the user).
+TEST_CASE("tau_from_log_mr_over_h is the exact inverse of "
+         "H_over_mr_closed_form")
+{
+    for (const double a_inv : {1.5, 2.0, 3.0})
+    {
+        for (const double c0 : {0.0, 1.0})
+        {
+            CTauSchedule sched{};
+            sched.c0 = c0;
+            Background bkg(a_inv, sched);
+
+            for (const double log_mr_over_h : {-2.0, -0.5, 0.0, 0.7, 3.1})
+            {
+                const double tau = bkg.tau_from_log_mr_over_h(log_mr_over_h);
+                CHECK(tau > 0.0);
+                const double round_trip =
+                    -std::log(bkg.H_over_mr_closed_form(tau));
+                CAPTURE(a_inv);
+                CAPTURE(c0);
+                CAPTURE(log_mr_over_h);
+                CHECK(round_trip == doctest::Approx(log_mr_over_h).epsilon(tol));
+            }
+        }
+    }
+}
+
+TEST_CASE("tau_from_log_mr_over_h(0) is the tau0 = 1 fixed point")
+{
+    CTauSchedule sched{};
+    sched.c0 = 0.7;
+    Background bkg(2.0, sched);
+    CHECK(bkg.tau_from_log_mr_over_h(0.0) ==
+          doctest::Approx(Background::tau0).epsilon(tol));
+}

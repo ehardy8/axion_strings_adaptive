@@ -11,8 +11,9 @@ plt*/
 chk*/
 *.hdf5
 *.h5
-network_scalars.dat
-axion_spectrum.dat
+network_scalars.dat*
+axion_spectrum.dat*
+axion_projection.dat*
 parameters_and_version.txt
 Backtrace.*
 

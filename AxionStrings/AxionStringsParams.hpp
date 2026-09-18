@@ -24,33 +24,6 @@
 namespace AxionStringsParams
 {
 
-enum class Mode
-{
-    Main,
-    PreEvolution
-};
-
-// axion_strings.mode: "main" (default) or "pre_evolution" (conventions.md
-// sec.7). Pre-evolution and the main run are separate executions
-// communicating through a checkpoint file, not two branches of a single
-// run -- this selects which one this execution is.
-inline Mode read_mode()
-{
-    GRParmParse pp("axion_strings");
-    std::string mode = "main";
-    pp.queryAdd("mode", mode);
-    if (mode == "main")
-    {
-        return Mode::Main;
-    }
-    if (mode == "pre_evolution")
-    {
-        return Mode::PreEvolution;
-    }
-    pp.error("mode", "must be \"main\" or \"pre_evolution\"");
-    return Mode::Main; // unreachable; pp.error aborts
-}
-
 inline Background read_background()
 {
     GRParmParse pp("axion_strings");
@@ -114,7 +87,7 @@ inline double read_tau_i(const Background &background)
 
 // Pre-evolution's own background (conventions.md sec.7, milestone-1.md
 // task 1.5) -- see PreEvolutionBackground.hpp for the derivation. Only
-// meaningful when read_mode() == Mode::PreEvolution.
+// meaningful when axion_strings.ic_mode == "fourier_relaxed".
 inline PreEvolutionBackground read_pre_evolution_background()
 {
     GRParmParse pp("axion_strings.pre_evolution");
@@ -172,20 +145,6 @@ inline FourierICParams read_fourier_ic_params(const std::string &prefix)
     pp.get("seed", seed);
     params.seed = static_cast<std::uint64_t>(seed);
     return params;
-}
-
-// Set (only on the specific restart command that performs the pre-
-// evolution -> main handoff) to trigger AxionStringsLevel::
-// specific_post_restart's rescale. A later restart of the main run's own
-// progress (e.g. resuming after a crash) must NOT re-apply it, so this is
-// not inferred from amr.restart alone -- it needs to be requested
-// explicitly, each time.
-inline bool read_restart_from_pre_evolution()
-{
-    GRParmParse pp("axion_strings");
-    bool restart_from_pre_evolution = false;
-    pp.queryAdd("restart_from_pre_evolution", restart_from_pre_evolution);
-    return restart_from_pre_evolution;
 }
 
 struct XiCheckCadence
@@ -292,18 +251,33 @@ inline MaskingParams read_masking_params(const std::string &prefix)
 // Box planning (conventions.md sec.5, milestone-1.md task 1.4). Skipped
 // entirely if axion_strings.N is absent, so ad hoc/manual grid setups (e.g.
 // the tasks 1.2/1.3 smoke tests) are unaffected. When present, N, N1, N2
-// derive L_tilde/tau_f (and hence geometry.prob_extent/evolution.stop_time)
-// for a constant-c run, or -- whenever a switch is configured, since the
-// only supported use of a switch is the fat->Moore protocol (sec.4) -- run
-// the Moore-phase dynamic-range check instead (sec.5, "Moore-phase box
-// planning"): the general formula is singular at c = a_inv and does not
-// apply there.
+// derive L_tilde/tau_f (and hence geometry.prob_extent) for a constant-c
+// run, or -- whenever a switch is configured, since the only supported use
+// of a switch is the fat->Moore protocol (sec.4) -- run the Moore-phase
+// dynamic-range check instead (sec.5, "Moore-phase box planning"): the
+// general formula is singular at c = a_inv and does not apply there.
 //
-// Already-set geometry.prob_extent/amr.n_cell/evolution.stop_time are
-// cross-checked rather than overwritten, so a run can also be configured
-// entirely by hand; a mismatch aborts before the run starts.
-inline void apply_box_plan(const Background &background, double tau_i,
-                          Mode mode)
+// Already-set geometry.prob_extent/amr.n_cell are cross-checked rather
+// than overwritten, so a run can also be configured entirely by hand; a
+// mismatch aborts before the run starts.
+//
+// evolution.stop_time is deliberately NOT derived here (2026-09-18, with
+// the user: replacing the old restart-based pre-evolution -> main handoff
+// with a single continuous run -- see AxionStringsLevel::okToContinue()).
+// tau_f (the derived stop condition) is instead injected as
+// axion_strings.derived_tau_f, purely informational/for AxionStringsLevel
+// ::variableSetUp() to read back, since okToContinue() is now the
+// authoritative stop condition for the general (non-Moore) box plan --
+// comparing the live tau against this value directly, correctly spanning
+// both an optional relaxation phase and the main evolution without caring
+// how long relaxation took. evolution.stop_time is instead forced to -1
+// (unlimited) if not already set, purely to defeat GRTeclyn's own
+// BaseParameterChecker, which otherwise silently defaults it to 1.0 --
+// found the hard way, see docs/STATUS.md. Moore mode is the one case that
+// still needs evolution.stop_time/max_steps set by hand (unaffected by
+// any of this): its box plan does not derive tau_f, so okToContinue()
+// cannot use it there either.
+inline void apply_box_plan(const Background &background, double tau_i)
 {
     GRParmParse pp("axion_strings");
     if (!pp.contains("N"))
@@ -425,32 +399,19 @@ inline void apply_box_plan(const Background &background, double tau_i,
                       "<= tau_i; cannot evolve forward from tau_i");
     }
 
-    // Decision (see docs/STATUS.md): pre-evolution uses the *same*
-    // geometry.prob_extent as the main run, not the sec.7 L_tilde_init
-    // formula's (generally different) value. Reasons: (1) AMReX's restart
-    // mechanism does not resize the domain -- verified directly -- so a
-    // differently-sized pre-evolution box could not actually be handed off
-    // via amr.restart without a custom regridding step nobody has designed
-    // yet; (2) the sec.7 formula only optimises pre-evolution's own
-    // resolution/box-size trade-off (it is computed without reference to
-    // the actual, a priori unknown, stopping time), while
-    // specific_post_restart's rescale (kappa, derived from the psi=R phi/v
-    // chain rule) already corrects the physical normalisation exactly,
-    // whatever box size was used -- so using L_tilde_main throughout costs
-    // nothing beyond a possibly-suboptimal (not incorrect) choice of
-    // pre-evolution resolution. L_tilde_init is still computed and printed
-    // here for reference/comparison, deliberately not acted on.
+    // FYI-only cross-reference to sec.7's L_tilde_init formula for an
+    // optional relaxation phase, computed here purely for comparison (see
+    // docs/STATUS.md): this run always uses L_tilde_main instead, since
+    // pre-evolution and the main evolution now share one live grid rather
+    // than communicating through a checkpoint, so no separate box size is
+    // ever actually needed.
     const double L_tilde = plan.L_tilde;
-    if (mode == Mode::PreEvolution)
-    {
-        const double L_tilde_init_fyi =
-            pre_evolution_L_tilde(plan.L_tilde, a_inv, c, tau_i);
-        amrex::Print()
-            << "  L_tilde (pre-evolution, sec.7 formula, FYI only) = "
-            << L_tilde_init_fyi
-            << " -- NOT used; this run uses L_tilde_main = " << L_tilde
-            << " instead (see docs/STATUS.md)\n";
-    }
+    const double L_tilde_init_fyi =
+        pre_evolution_L_tilde(plan.L_tilde, a_inv, c, tau_i);
+    amrex::Print() << "  L_tilde (sec.7 pre-evolution formula, FYI only) = "
+                   << L_tilde_init_fyi
+                   << " -- NOT used; this run uses L_tilde_main = " << L_tilde
+                   << " throughout (see docs/STATUS.md)\n";
 
     GRParmParse geom_pp("geometry");
     if (geom_pp.contains("prob_extent"))
@@ -477,104 +438,77 @@ inline void apply_box_plan(const Background &background, double tau_i,
                        << " " << L_tilde << " " << L_tilde << "\n";
     }
 
-    if (mode == Mode::PreEvolution)
-    {
-        // Pre-evolution does not stop at a fixed evolution.stop_time -- it
-        // stops when the measured xi first drops to the target (sec.7/
-        // task 1.5's xi-monitoring loop). Leave evolution.stop_time (and
-        // max_steps) as a user-set safety cap.
-        return;
-    }
+    pp.add("derived_tau_f", plan.tau_f);
 
-    const double stop_time = plan.tau_f - tau_i;
     GRParmParse evolution_pp("evolution");
-    if (evolution_pp.contains("stop_time"))
+    if (!evolution_pp.contains("stop_time"))
     {
-        double existing_stop_time{};
-        evolution_pp.get("stop_time", existing_stop_time);
-        if (std::abs(existing_stop_time - stop_time) > 1.0e-6 * stop_time)
-        {
-            evolution_pp.error(
-                "stop_time",
-                "does not match tau_f - tau_i derived from axion_strings.N/"
-                "N1/N2 -- either remove evolution.stop_time to let it be "
-                "derived, or fix the box-planning inputs to match");
-        }
-    }
-    else
-    {
-        evolution_pp.add("stop_time", stop_time);
-        amrex::Print() << "  -> evolution.stop_time set to " << stop_time
-                       << "\n";
+        evolution_pp.add("stop_time", -1.0);
+        amrex::Print()
+            << "  -> evolution.stop_time set to -1 (unlimited): "
+               "AxionStringsLevel::okToContinue() is the authoritative stop "
+               "condition now, comparing the live tau against "
+               "axion_strings.derived_tau_f = "
+            << plan.tau_f << "\n";
     }
 }
 
+// axion_strings.ic_mode = "fourier_relaxed" (2026-09-18, with the user,
+// replacing the old two-execution restart-based handoff entirely: each
+// pre-evolution run was only ever used for one main run anyway -- no
+// ensemble-reuse value lost -- and a single continuous run avoids both a
+// second cluster job submission and an intermediate full-grid checkpoint):
+// generate a Fourier-mode IC in the pre-evolution time-gauge, relax it via
+// the xi-monitoring loop, then AxionStringsLevel::specific_post_timestep
+// transitions in place (rescale + switch phase) to the main evolution,
+// all within the same process, no restart involved. See
+// AxionStringsLevel::Phase.
 inline void check_params()
 {
-    const Mode mode              = read_mode();
     const Background background = read_background();
     const double tau_i          = read_tau_i(background);
-    apply_box_plan(background, tau_i, mode);
+    apply_box_plan(background, tau_i);
 
-    if (mode == Mode::PreEvolution)
+    std::string ic_mode = "homogeneous";
+    GRParmParse("axion_strings").queryAdd("ic_mode", ic_mode);
+    if (ic_mode == "fourier_relaxed")
     {
         read_pre_evolution_background();
         read_xi_target();
         read_fourier_ic_params("axion_strings.pre_evolution");
         read_xi_check_cadence();
-
-        GRParmParse amr_pp("amr");
-        int check_int = -1;
-        amr_pp.queryAdd("check_int", check_int);
-        if (check_int < 0)
-        {
-            amr_pp.error(
-                "check_int",
-                "must be >= 0 for a pre_evolution run -- its whole purpose "
-                "is to hand off to the main run through a checkpoint "
-                "(conventions.md sec.7)");
-        }
     }
-    else
+    else if (ic_mode == "fourier")
     {
-        std::string ic_mode = "homogeneous";
-        GRParmParse("axion_strings").queryAdd("ic_mode", ic_mode);
-        if (ic_mode == "fourier")
-        {
-            // Main run, generating Fourier-mode ICs directly at tau_i --
-            // the user's "skip pre-evolution" option (conventions.md
-            // sec.7).
-            read_fourier_ic_params("axion_strings");
-        }
-        // ic_mode == "homogeneous"/"straight_string_test": ad hoc/manual
-        // configs (tasks 1.2/1.3/1.6 smoke tests), or a restart (either
-        // the pre-evolution handoff via restart_from_pre_evolution, or an
-        // ordinary resumption of the main run's own progress) -- nothing
-        // further to validate here.
+        // Generating Fourier-mode ICs directly at tau_i -- the user's
+        // "skip relaxation entirely" option (conventions.md sec.7).
+        read_fourier_ic_params("axion_strings");
+    }
+    // ic_mode == "homogeneous"/"straight_string_test"/"plane_wave_test":
+    // ad hoc/manual configs (tasks 1.2/1.3/1.6/1.9 smoke tests) -- nothing
+    // further to validate for the IC itself.
 
-        read_output_cadence();
+    read_output_cadence();
 
-        // The persisted spectrum (axion_spectrum.dat) is only useful if it
-        // is genuinely screened -- scheme "A" has no top-hat at all, and
-        // "none" is the raw unscreened field -- so require scheme B
-        // whenever the routine per-snapshot spectrum output is on. (The
-        // plane_wave_test IC's own one-shot spectrum check in initData()
-        // is a separate, self-contained identity check that hardcodes
-        // MaskingScheme::None regardless of this setting, so it is
-        // unaffected.)
-        bool compute_spectrum_flag = false;
-        GRParmParse spectrum_pp("axion_strings");
-        spectrum_pp.queryAdd("compute_spectrum", compute_spectrum_flag);
-        if (compute_spectrum_flag &&
-            read_masking_params("axion_strings.masking").scheme !=
-                MaskingScheme::B)
-        {
-            spectrum_pp.error(
-                "compute_spectrum",
-                "requires axion_strings.masking.scheme = B -- the "
-                "spectrum saved to axion_spectrum.dat must be the "
-                "genuinely screened field");
-        }
+    // The persisted spectrum (axion_spectrum.dat) is only useful if it is
+    // genuinely screened -- scheme "A" has no top-hat at all, and "none"
+    // is the raw unscreened field -- so require scheme B whenever the
+    // routine per-snapshot spectrum output is on. (The plane_wave_test
+    // IC's own one-shot spectrum check in initData() is a separate, self-
+    // contained identity check that hardcodes MaskingScheme::None
+    // regardless of this setting, so it is unaffected.)
+    bool compute_spectrum_flag = false;
+    GRParmParse spectrum_pp("axion_strings");
+    spectrum_pp.queryAdd("compute_spectrum", compute_spectrum_flag);
+    if (compute_spectrum_flag &&
+        read_masking_params("axion_strings.masking").scheme !=
+            MaskingScheme::B)
+    {
+        spectrum_pp.error(
+            "compute_spectrum",
+            "requires axion_strings.masking.scheme = B -- the "
+            "spectrum saved to axion_spectrum.dat must be the "
+            "genuinely screened field");
     }
 }
 

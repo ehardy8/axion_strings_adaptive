@@ -11,9 +11,11 @@
 # Ensemble runs don't save the full 3D grid at all (2026-09-18, with the
 # user): checkpoints and plotfiles are off by default. Set check_int/
 # plot_int >= 0 explicitly for a one-off run you actually want to inspect
-# or restart from its own checkpoint (as opposed to Mode::PreEvolution's
-# handoff checkpoint, which is required regardless -- see
-# AxionStringsParams::check_params).
+# or restart from its own checkpoint after a crash -- checkpointing is
+# always optional now (the old requirement, for pre-evolution's mandatory
+# handoff checkpoint, no longer exists: see params_production.txt and
+# docs/STATUS.md, "single continuous run" replacing the restart-based
+# handoff).
 amr.verbose = 1
 amr.check_int = -1
 amr.plot_int  = -1

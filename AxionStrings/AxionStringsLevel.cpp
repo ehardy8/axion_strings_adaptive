@@ -20,23 +20,38 @@ void AxionStringsLevel::variableSetUp()
 
     state_variable_set_up();
 
-    s_mode       = AxionStringsParams::read_mode();
     s_background = AxionStringsParams::read_background();
     s_tau_i      = AxionStringsParams::read_tau_i(s_background);
 
-    if (s_mode == AxionStringsParams::Mode::PreEvolution)
+    // Read back AxionStringsParams::apply_box_plan's derived tau_f
+    // (informational ParmParse injection; see its own comment) -- absent
+    // in Moore mode, where okToContinue() falls back to evolution.
+    // stop_time/max_steps instead.
+    double tau_f{};
+    s_has_tau_f =
+        amrex::ParmParse("axion_strings").query("derived_tau_f", tau_f);
+    s_tau_f = tau_f;
+
+    // Every run needs these now, not just ones that skip relaxation --
+    // there is no longer a separate, non-diagnostic relaxation-only mode.
+    s_energy_masking =
+        AxionStringsParams::read_masking_params("axion_strings.masking");
+    s_output_cadence = AxionStringsParams::read_output_cadence();
+    s_next_output_log_mr_over_h = s_output_cadence.first_log_mr_over_h;
+
+    std::string ic_mode = "homogeneous";
+    amrex::ParmParse("axion_strings").queryAdd("ic_mode", ic_mode);
+    if (ic_mode == "fourier_relaxed")
     {
         s_pre_background = AxionStringsParams::read_pre_evolution_background();
         s_xi_target       = AxionStringsParams::read_xi_target();
         s_xi_cadence       = AxionStringsParams::read_xi_check_cadence();
         s_xi_check_interval = s_xi_cadence.coarse_interval;
+        s_phase = Phase::Relaxing;
     }
     else
     {
-        s_energy_masking =
-            AxionStringsParams::read_masking_params("axion_strings.masking");
-        s_output_cadence = AxionStringsParams::read_output_cadence();
-        s_next_output_log_mr_over_h = s_output_cadence.first_log_mr_over_h;
+        s_phase = Phase::Evolving;
     }
 }
 
@@ -235,23 +250,22 @@ void AxionStringsLevel::initData()
         return;
     }
 
-    const bool generating_pre_evolution_ic =
-        (s_mode == AxionStringsParams::Mode::PreEvolution);
+    const bool generating_relaxed_ic = (ic_mode == "fourier_relaxed");
 
-    if (generating_pre_evolution_ic || ic_mode == "fourier")
+    if (generating_relaxed_ic || ic_mode == "fourier")
     {
         // Fourier-mode initial conditions (conventions.md sec.7): modes
         // occupied for |k| <= k_max, zero above, normalised to a target
         // mean-square variance. Pi1 = Pi2 = 0 (displacement-only ICs --
         // conventions.md does not specify a Pi variance, only psi's).
-        const std::string prefix = generating_pre_evolution_ic
+        const std::string prefix = generating_relaxed_ic
                                        ? "axion_strings.pre_evolution"
                                        : "axion_strings";
         const auto fourier_params =
             AxionStringsParams::read_fourier_ic_params(prefix);
 
         const amrex::Real m_r =
-            generating_pre_evolution_ic
+            generating_relaxed_ic
                 ? std::sqrt(s_pre_background.lambda(0.0))
                 : std::sqrt(s_background.lambda(s_tau_i));
         const amrex::Real dx = Geom().CellSize(0);
@@ -311,7 +325,7 @@ void AxionStringsLevel::specific_eval_rhs(amrex::MultiFab &a_soln,
     amrex::Real curvature_coeff{};
     amrex::Real lambda{};
     amrex::Real R_squared{};
-    if (s_mode == AxionStringsParams::Mode::PreEvolution)
+    if (s_phase == Phase::Relaxing)
     {
         // Pre-evolution's own clock starts at a_time = 0 = tau_pre.
         const amrex::Real tau_pre = a_time;
@@ -352,7 +366,7 @@ void AxionStringsLevel::specific_post_timestep()
         return;
     }
 
-    if (s_mode == AxionStringsParams::Mode::PreEvolution)
+    if (s_phase == Phase::Relaxing)
     {
         // xi-monitoring stopping loop (conventions.md sec.7, task 1.5).
         // Measuring xi means a plaquette count over the whole grid, which
@@ -373,8 +387,8 @@ void AxionStringsLevel::specific_post_timestep()
         const double dx           = Geom().CellSize(0);
         const double L_tilde      = Geom().ProbLength(0);
         // xi is measured at tau = tau_i (the main run's start -- the
-        // physical instant this pre-evolution state represents once
-        // handed off), not tau_pre (confirmed with the user).
+        // physical instant this relaxed state represents once the
+        // transition below occurs), not tau_pre (confirmed with the user).
         const double xi = xi_from_plaquette_count(
             static_cast<double>(counts.n_p_plain), dx, L_tilde,
             s_background.a_inv, s_tau_i);
@@ -387,16 +401,17 @@ void AxionStringsLevel::specific_post_timestep()
                        << "  ratio = " << ratio << "\n";
 
         // xi generally decreases during relaxation (user's observation):
-        // stop the first time it drops to the target rather than waiting
-        // for an exact match.
+        // transition the first time it drops to the target rather than
+        // waiting for an exact match.
         if (ratio <= 1.0)
         {
             amrex::Print()
                 << "  [AxionStrings pre-evolution] target xi reached -- "
-                   "stopping (a checkpoint is written once the time-"
-                   "stepping loop exits).\n";
-            s_pre_evolution_target_reached = true;
-            return;
+                   "transitioning in place to the main evolution (no "
+                   "restart/checkpoint involved).\n";
+            apply_pre_evolution_to_main_rescale();
+            s_phase = Phase::Evolving;
+            return; // the main-mode diagnostics below start on the next call
         }
 
         if (ratio <= s_xi_cadence.fine_threshold)
@@ -833,28 +848,36 @@ void AxionStringsLevel::tag_cells(amrex::TagBoxArray &tags,
 
 int AxionStringsLevel::okToContinue()
 {
-    if (s_mode == AxionStringsParams::Mode::PreEvolution &&
-        s_pre_evolution_target_reached)
+    if (s_phase == Phase::Relaxing)
     {
-        return 0;
+        // Never stops on its own here: the transition to Evolving (once
+        // the xi-monitoring loop's target is reached) happens in place
+        // inside specific_post_timestep(), not by ending the run.
+        return 1;
     }
-    return 1;
+    if (!s_has_tau_f)
+    {
+        // Moore mode: apply_box_plan does not derive tau_f there (see its
+        // own comment) -- fall back to evolution.stop_time/max_steps, set
+        // by hand (docs/STATUS.md's known Moore-mode limitation).
+        return 1;
+    }
+    const amrex::Real tau_now = s_tau_i + get_state_data(state_index).curTime();
+    return (tau_now < s_tau_f) ? 1 : 0;
 }
 
-void AxionStringsLevel::specific_post_restart()
+void AxionStringsLevel::apply_pre_evolution_to_main_rescale()
 {
-    // Pre-evolution -> main handoff (conventions.md sec.7): only on the one
-    // restart command that performs it, flagged explicitly so a later,
-    // ordinary restart of the main run's own progress does not re-apply
-    // the rescale (see AxionStringsParams::read_restart_from_pre_evolution).
-    if (s_mode != AxionStringsParams::Mode::Main ||
-        !AxionStringsParams::read_restart_from_pre_evolution())
-    {
-        return;
-    }
+    // Pre-evolution -> main handoff (conventions.md sec.7), applied in
+    // place within the same run (2026-09-18, with the user: replacing the
+    // old restart-based handoff entirely -- each pre-evolution run is only
+    // ever used for one main run, so no ensemble-reuse value is lost, and
+    // this avoids a second cluster job submission and an intermediate
+    // full-grid checkpoint on a memory-constrained cluster). Math is
+    // unchanged from the old specific_post_restart().
 
-    // Pre-evolution's own clock (tau_pre) starts at 0, so whatever a_time
-    // the checkpoint recorded *is* tau_pre at handoff.
+    // Pre-evolution's own clock (tau_pre) starts at 0, so the a_time this
+    // level has reached *is* tau_pre at the moment of transition.
     const amrex::Real tau_pre_end = get_state_data(state_index).curTime();
 
     const amrex::Real R_pre        = s_pre_background.R(tau_pre_end);
@@ -873,9 +896,10 @@ void AxionStringsLevel::specific_post_restart()
                        << ", kappa = " << kappa << "\n";
     }
 
-    // a_time continues counting up from wherever the checkpoint's clock
-    // left off (it does not reset to 0), so s_tau_i must absorb that
-    // offset for tau = s_tau_i + a_time to still equal tau_i right now.
+    // a_time keeps counting up through the transition (it never resets to
+    // 0), so s_tau_i must absorb tau_pre_end for tau = s_tau_i + a_time to
+    // still equal tau_i right now, and to correctly track the main
+    // evolution's tau from here on.
     s_tau_i = s_tau_i - tau_pre_end;
 
     for (amrex::MultiFab *mf :

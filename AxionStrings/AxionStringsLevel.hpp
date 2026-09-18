@@ -33,32 +33,54 @@ class AxionStringsLevel : public GRAmrLevel
     void tag_cells(amrex::TagBoxArray &tags,
                    amrex::Real a_regrid_threshold) override;
 
-    // Signals the pre-evolution -> main run loop (Main_AxionStrings.cpp) to
-    // stop once the xi-monitoring loop's target is reached (task 1.5).
+    // The authoritative stop condition (Main_AxionStrings.cpp's loop, via
+    // amr.okToContinue()): stops once tau reaches the box-planning-derived
+    // tau_f, correctly spanning an optional relaxation phase (Phase::
+    // Relaxing) and the main evolution (Phase::Evolving) without caring how
+    // long relaxation took, since the transition between them is in place,
+    // not a restart. Falls back to leaving evolution.stop_time/max_steps as
+    // the stop condition (never returns 0) when box planning could not
+    // derive tau_f (Moore mode -- see AxionStringsParams::apply_box_plan).
     int okToContinue() override;
 
-    // Pre-evolution -> main handoff (conventions.md sec.7): rescales the
-    // restored state from pre-evolution's normalisation into the main
-    // run's, when axion_strings.restart_from_pre_evolution is set.
-    void specific_post_restart() override;
+    // Which phase of a single continuous run this level is currently in
+    // (2026-09-18, with the user: replacing the old restart-based pre-
+    // evolution -> main handoff -- each pre-evolution run was only ever
+    // used for one main run anyway, so nothing is lost, and this avoids a
+    // second cluster job submission and an intermediate full-grid
+    // checkpoint). Every run starts in Evolving unless axion_strings.
+    // ic_mode == "fourier_relaxed", which starts in Relaxing; specific_post
+    // _timestep() transitions Relaxing -> Evolving in place (rescale, via
+    // apply_pre_evolution_to_main_rescale()) once the xi-monitoring loop's
+    // target is reached, never restarting the process.
+    enum class Phase
+    {
+        Relaxing,
+        Evolving
+    };
+    inline static Phase s_phase{Phase::Evolving};
 
     // Background and c(tau) schedule, cached once in variableSetUp() from
     // the axion_strings.* parameters (conventions.md sec.4-5). Conformal
     // time is tau = s_tau_i + a_time, since the AMReX clock always starts
-    // at a_time = 0 (or, after a restart, at whatever time the checkpoint
-    // recorded).
+    // at a_time = 0 and never resets (including across the in-place
+    // Relaxing -> Evolving transition, which instead adjusts s_tau_i -- see
+    // apply_pre_evolution_to_main_rescale()).
     inline static Background s_background{};
     inline static amrex::Real s_tau_i{1.0};
-    inline static AxionStringsParams::Mode s_mode{
-        AxionStringsParams::Mode::Main};
 
-    // Pre-evolution only (conventions.md sec.7).
+    // Box-planning-derived final tau (AxionStringsParams::apply_box_plan's
+    // axion_strings.derived_tau_f, read back here), and whether it was
+    // actually available (absent in Moore mode -- see okToContinue()).
+    inline static double s_tau_f{0.0};
+    inline static bool s_has_tau_f{false};
+
+    // Relaxation phase only (conventions.md sec.7).
     inline static PreEvolutionBackground s_pre_background{};
     inline static double s_xi_target{0.0};
     inline static AxionStringsParams::XiCheckCadence s_xi_cadence{};
     inline static long s_steps_since_xi_check{0};
     inline static long s_xi_check_interval{50};
-    inline static bool s_pre_evolution_target_reached{false};
 
     // Whether each output file's header has been written yet (fresh-run
     // bookkeeping only -- a genuine restart never re-writes a header, see
@@ -85,6 +107,13 @@ class AxionStringsLevel : public GRAmrLevel
     {
         return dynamic_cast<AxionStringsLevel &>(parent->getLevel(lev));
     }
+
+    // The old specific_post_restart's handoff rescale (conventions.md
+    // sec.7), now applied in place from specific_post_timestep() the
+    // moment the xi-monitoring loop's target is reached, rather than via
+    // an external restart. Derivation unchanged: kappa = R_main(tau_i) /
+    // R_pre(tau_pre_end) from the psi = R phi/v chain rule.
+    void apply_pre_evolution_to_main_rescale();
 };
 
 #endif /* AXIONSTRINGSLEVEL_HPP_ */

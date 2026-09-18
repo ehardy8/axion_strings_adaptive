@@ -531,12 +531,55 @@ void AxionStringsLevel::specific_post_timestep()
         energy.n_unmasked * (energy.rho_axion_gradient_screened -
                              energy.rho_axion_kinetic_screened);
     const double dx3 = dx * dx * dx;
-    // 2 strings (vortex/antivortex pair), each spanning the full box in z.
-    const double string_length_in_box = 2.0 * Geom().ProbLength(2);
+
+    // Comoving/physical normalisation for tension (energy per unit length),
+    // reworked 2026-09-18 with the user, deviating from a straight reading
+    // of conventions.md sec.10 (documented here per the user's explicit
+    // go-ahead to do so when the choice is written down).
+    //
+    // rho_tot_pointwise (Energy.hpp) is the genuine PHYSICAL energy
+    // density (energy per physical volume) -- derived directly from the
+    // canonically normalised phi Lagrangian, dt physical, grad physical.
+    // Lattice points sit on a uniform comoving grid, so at fixed tau every
+    // cell has the same physical volume (R dx)^3 and the arithmetic mean
+    // over points IS the physical-volume average -- sum_core_rho_tot above
+    // is dimensionless-count x rho, so the physical ENERGY in the core
+    // cells is R(tau)^3 * dx^3 * sum_core_rho_tot, not dx^3 * sum_core_rho_tot:
+    // the previous formula omitted this R^3.
+    //
+    // The previous string_length_in_box = 2*Geom().ProbLength(2) hardcoded
+    // "exactly 2 straight strings spanning the box in z", correct only for
+    // the T1 straight_string_test IC (and only as a *comoving* length -- it
+    // also omitted converting to physical length, R*length_comoving). For a
+    // general network (many loops of random orientation, as here) neither
+    // assumption holds. Replaced with the same plaquette-count relation
+    // XiFormula.hpp already uses to turn N_p into a length: each pierced
+    // plaquette represents ~(2/3)*dx of string, the 2/3 being a *statistical*
+    // correction for random orientation relative to the lattice (established
+    // already, conventions.md sec.8) -- explicitly NOT exact for a single
+    // deterministically axis-aligned string like T1's, so this new formula
+    // is intended for network runs, not as a drop-in replacement for T1's
+    // own (exact, deterministic-length) validation. T1's previously
+    // recorded tension value (~3.72, docs/STATUS.md) was measured with the
+    // old formula and is not expected to still hold with this one -- no
+    // automated regression test depends on the exact number (checked:
+    // tests/ has no tension test), so this is flagged for a follow-up
+    // re-validation rather than chased now.
+    //
+    // Physical energy / physical length:
+    //   mu = [R^3 dx^3 Sum_core(rho)] / [R * ell_comoving]
+    //      = R^2 dx^3 Sum_core(rho) / ell_comoving,   ell_comoving = (2/3) N_p dx
+    const double R_tau           = s_background.R(tau);
+    const double ell_comoving    = (2.0 / 3.0) * counts.n_p_plain * dx;
     const double tension_core_only =
-        sum_core_rho_tot * dx3 / string_length_in_box;
+        (ell_comoving > 0.0)
+            ? (R_tau * R_tau) * dx3 * sum_core_rho_tot / ell_comoving
+            : 0.0;
     const double tension_core_plus_tail =
-        (sum_core_rho_tot + sum_unmasked_tail) * dx3 / string_length_in_box;
+        (ell_comoving > 0.0)
+            ? (R_tau * R_tau) * dx3 * (sum_core_rho_tot + sum_unmasked_tail) /
+                  ell_comoving
+            : 0.0;
 
     amrex::Print() << "  [AxionStrings] tau = " << tau
                    << "  N_p = " << counts.n_p_plain

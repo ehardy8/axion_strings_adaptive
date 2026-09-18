@@ -1,0 +1,83 @@
+# AxionStrings parameter file -- same N=256 fat-string demo run as
+# params_demo_256.txt (see that file's header for the pre-evolution/
+# relaxation validation history), but with screening turned on (scheme B,
+# default threshold 0.8) and the axion spectrum switched on, so the string
+# tension (from the screened/unscreened energy difference, conventions.md
+# sec.10) and the axion emission spectrum can be measured (2026-09-18, with
+# the user).
+
+#################################################
+# Filesystem parameters
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+
+#################################################
+# Grid parameters -- amr.n_cell/geometry.prob_extent derived by box
+# planning below from axion_strings.N/N1/N2.
+
+amr.max_level = 0
+
+amr.max_grid_size   = 64
+amr.blocking_factor = 32
+amr.n_error_buf     = 1
+
+#################################################
+# Boundary condition parameters
+
+geometry.is_periodic = 1 1 1
+
+#################################################
+# Evolution parameters
+
+evolution.dt_multiplier = 0.2
+# okToContinue() is the real stop condition (derived tau_f); no step cap.
+evolution.max_steps = -1
+
+#################################################
+# AxionStrings parameters
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 1.0 # fat string
+
+# log(m_r/H) at the *main run's* start -- "when strings are well formed
+# objects", not at the very start of the network's own formation.
+axion_strings.log_mr_over_h_i = 3.0
+
+# Box planning: N=256 (box size), N1=1 (HL=1 at final time), N2=1
+# (m_r*Delta=1 at final time).
+axion_strings.N  = 256
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+# Relax a Fourier-mode IC down to xi_target before continuing to the main
+# evolution, all in this one run (AxionStringsLevel::Phase).
+axion_strings.ic_mode = fourier_relaxed
+
+# Same pre-evolution parameters as params_demo_256.txt (gamma=1 matches the
+# m_r*dx=1 convention for this dx=1 configuration; xi_target=1 is the
+# expected attractor value).
+axion_strings.pre_evolution.gamma = 1.0
+axion_strings.pre_evolution.xi_target = 1.0
+axion_strings.pre_evolution.k_max_over_mr        = 128
+axion_strings.pre_evolution.mean_square_variance = 0.5  # <|psi|^2> = 2*this = v^2 = 1
+axion_strings.pre_evolution.seed = 42
+
+# Screening (conventions.md sec.10/sec.14): scheme B, top-hat on |psi|/R.
+# Threshold left at its coded default (0.8, the fixed-grid code's own
+# value) -- not settled, to be scanned later (CLAUDE.md constraint 4).
+axion_strings.masking.scheme = B
+
+# Compute and save the axion power spectrum (screened and unscreened side
+# by side) at every diagnostic snapshot -- axion_spectrum.dat.
+axion_strings.compute_spectrum = 1
+
+# Diagnostic output cadence for the main run: log(m_r/H) spans
+# [3, log(256)=5.545] here, so 0.1 gives ~25 snapshots.
+axion_strings.output_first_log_mr_over_h = 3.0
+axion_strings.output_delta_log_mr_over_h = 0.1
+
+# 2D energy-density projection at every main-run snapshot (used for the
+# final-timeshot figure).
+axion_strings.save_projection = 1

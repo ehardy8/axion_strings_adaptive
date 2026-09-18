@@ -1,0 +1,74 @@
+# AxionStrings parameter file -- moderate-size (N=256) demo run with a
+# genuinely random Fourier-mode IC (ic_mode=fourier, no relaxation phase --
+# "quite random initial conditions"), physical evolution (c0=0), to produce
+# an xi-vs-log(m_r/H) curve and a final-timeshot energy-density projection.
+
+#################################################
+# Filesystem parameters
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+
+#################################################
+# Grid parameters -- amr.n_cell/geometry.prob_extent derived by box
+# planning below from axion_strings.N/N1/N2.
+
+amr.max_level = 0
+
+amr.max_grid_size   = 64
+amr.blocking_factor = 32
+amr.n_error_buf     = 1
+
+#################################################
+# Boundary condition parameters
+
+geometry.is_periodic = 1 1 1
+
+#################################################
+# Evolution parameters
+
+evolution.dt_multiplier = 0.2
+# okToContinue() is the real stop condition (derived tau_f); no step cap.
+evolution.max_steps = -1
+
+#################################################
+# AxionStrings parameters
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 0.0 # physical evolution
+
+# m_r/H = 1 at the start.
+axion_strings.log_mr_over_h_i = 0.0
+
+# Box planning: N=256 (box size), N1=1 (HL=1 at final time), N2=1
+# (m_r*Delta=1 at final time).
+axion_strings.N  = 256
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+# Genuinely random Fourier-mode IC, generated directly at tau_i -- no
+# pre-evolution relaxation ("quite random initial conditions").
+axion_strings.ic_mode = fourier
+#
+# k_max_over_mr = 1024, not O(1): physical mode (c0=0) keeps m_r constant
+# while the box's comoving dx is sized for the *final*-time resolution
+# target (N2), so at tau_i the grid is far finer than m_r needs -- m_r*dx
+# = 0.0625 here (found this the hard way: k_max_over_mr=1.0 gave
+# k_max_cells = k_max_over_mr*m_r*dx = 0.0625, below the smallest nonzero
+# mode, so *no* modes were populated at all and the "IC" was silently the
+# flat vacuum, not random). 1024 puts k_max_cells at half the grid's own
+# Nyquist frequency (128), i.e. genuinely broadband, confirmed at small
+# scale (N=16) to give an actively evolving, string-threaded field.
+axion_strings.k_max_over_mr        = 1024
+axion_strings.mean_square_variance = 0.5  # <|psi|^2> = 2*this = v^2 = 1
+axion_strings.seed = 42
+
+# Diagnostic output cadence: one snapshot every 0.1 in log(m_r/H), from the
+# very start.
+axion_strings.output_first_log_mr_over_h = 0.0
+axion_strings.output_delta_log_mr_over_h = 0.1
+
+# 2D energy-density projection at every snapshot (used for the final-
+# timeshot figure).
+axion_strings.save_projection = 1

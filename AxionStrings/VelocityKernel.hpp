@@ -16,6 +16,7 @@
 #include "Velocity.hpp"
 
 #include <AMReX_MultiFab.H>
+#include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Reduce.H>
 
 struct VelocityResult
@@ -110,6 +111,15 @@ compute_velocity_at_pierced_corners(const amrex::MultiFab &state,
     VelocityResult out{};
     out.sum_gamma_sq_v_sq = amrex::get<0>(result);
     out.count             = amrex::get<1>(result);
+
+    // amrex::ReduceOps only reduces within this rank's own boxes -- found
+    // the hard way (2026-09-18): with a genuinely multi-rank run, every
+    // rank silently reported only its own local sum/count as if they were
+    // the whole domain's, without this. AMReX's own Reduce::Sum/Min/Max
+    // free functions (AMReX_Reduce.H) never add this either -- it is
+    // always the caller's job for a cross-rank total.
+    amrex::ParallelDescriptor::ReduceRealSum(out.sum_gamma_sq_v_sq);
+    amrex::ParallelDescriptor::ReduceLongSum(out.count);
     return out;
 }
 

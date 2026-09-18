@@ -18,6 +18,7 @@
 #include "StateVariables.hpp"
 
 #include <AMReX_MultiFab.H>
+#include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Reduce.H>
 
 #include <cmath>
@@ -76,6 +77,15 @@ count_plaquettes(const amrex::MultiFab &state)
     PlaquetteCounts counts{};
     counts.n_p_plain    = amrex::get<0>(result);
     counts.n_p_weighted = amrex::get<1>(result);
+
+    // amrex::ReduceOps only reduces within this rank's own boxes -- found
+    // the hard way (2026-09-18): with a genuinely multi-rank run, every
+    // rank silently reported only its own local count as if it were the
+    // whole domain's, without this. AMReX's own Reduce::Sum/Min/Max free
+    // functions (AMReX_Reduce.H) never add this either -- it is always
+    // the caller's job for a cross-rank total.
+    amrex::ParallelDescriptor::ReduceLongSum(counts.n_p_plain);
+    amrex::ParallelDescriptor::ReduceLongSum(counts.n_p_weighted);
     return counts;
 }
 

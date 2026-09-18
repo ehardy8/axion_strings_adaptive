@@ -33,6 +33,7 @@
 #include "StateVariables.hpp"
 
 #include <AMReX_MultiFab.H>
+#include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Reduce.H>
 
 struct TotalEnergyResult
@@ -75,6 +76,18 @@ compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
             const double Pi2  = a(i, j, k, c_Pi2);
             const double psi_sq = psi1 * psi1 + psi2 * psi2;
 
+            // psi_sq == 0.0 exactly is a genuine 0/0 for both quantities
+            // below (grad_theta and theta_prime's numerators are also
+            // exactly 0 there, since both are linear in psi1, psi2) --
+            // string cores, not a numerical-precision edge case. Guarded
+            // the same way Masking.hpp's masked_a_dot already is ("check
+            // before dividing, so a 0/0 core is zeroed cleanly rather than
+            // propagating a NaN through 0 * NaN") -- EnergyKernel.hpp's
+            // masking_weight multiply happens *after* this, so it cannot
+            // do that job on its own (found the hard way, 2026-09-18: a
+            // genuinely random Fourier IC hits this on the very first
+            // step, unlike the T1 test's two cores, deliberately offset
+            // off-grid by construction).
             const auto grad_psi1 = deriv.d1_scalar(i, j, k, a, c_psi1);
             const auto grad_psi2 = deriv.d1_scalar(i, j, k, a, c_psi2);
             double grad_psi1_sq  = 0.0;
@@ -85,7 +98,10 @@ compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
                 grad_psi1_sq += grad_psi1(dir) * grad_psi1(dir);
                 grad_psi2_sq += grad_psi2(dir) * grad_psi2(dir);
                 const double dtheta_dir =
-                    (psi1 * grad_psi2(dir) - psi2 * grad_psi1(dir)) / psi_sq;
+                    (psi_sq > 0.0)
+                        ? (psi1 * grad_psi2(dir) - psi2 * grad_psi1(dir)) /
+                              psi_sq
+                        : 0.0;
                 grad_theta_sq += dtheta_dir * dtheta_dir;
             }
 
@@ -93,7 +109,8 @@ compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
                 psi1, psi2, Pi1, Pi2, grad_psi1_sq, grad_psi2_sq, R, lambda,
                 b_inv, tau);
 
-            const double theta_prime = (psi1 * Pi2 - Pi1 * psi2) / psi_sq;
+            const double theta_prime =
+                (psi_sq > 0.0) ? (psi1 * Pi2 - Pi1 * psi2) / psi_sq : 0.0;
             const double rho_a_kin =
                 axion_kinetic_energy_pointwise(theta_prime, R);
             const double rho_a_grad =
@@ -106,13 +123,24 @@ compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
         });
 
     const ReduceTuple result = reduce_data.value(reduce_op);
-    const double sum_rho          = amrex::get<0>(result);
-    const double sum_rho_w        = amrex::get<1>(result);
-    const double sum_rho_a_kin    = amrex::get<2>(result);
-    const double sum_rho_a_kin_w  = amrex::get<3>(result);
-    const double sum_rho_a_grad   = amrex::get<4>(result);
-    const double sum_rho_a_grad_w = amrex::get<5>(result);
-    const double sum_w            = amrex::get<6>(result);
+    // amrex::ReduceOps only reduces within this rank's own boxes -- found
+    // the hard way (2026-09-18): with a genuinely multi-rank run, every
+    // rank silently reported only its own local sums as if they were the
+    // whole domain's, without this. AMReX's own Reduce::Sum/Min/Max free
+    // functions (AMReX_Reduce.H) never add this either -- it is always
+    // the caller's job for a cross-rank total.
+    double sums[7] = {
+        amrex::get<0>(result), amrex::get<1>(result), amrex::get<2>(result),
+        amrex::get<3>(result), amrex::get<4>(result), amrex::get<5>(result),
+        amrex::get<6>(result)};
+    amrex::ParallelDescriptor::ReduceRealSum(sums, 7);
+    const double sum_rho          = sums[0];
+    const double sum_rho_w        = sums[1];
+    const double sum_rho_a_kin    = sums[2];
+    const double sum_rho_a_kin_w  = sums[3];
+    const double sum_rho_a_grad   = sums[4];
+    const double sum_rho_a_grad_w = sums[5];
+    const double sum_w            = sums[6];
 
     const auto n_total_d = static_cast<double>(n_cells_total);
 

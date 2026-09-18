@@ -55,6 +55,28 @@ string, `1 + b_inv` = Moore; `b_inv = 1` in radiation domination, so `c0=2`):
 ... AxionStrings/params_test.txt axion_strings.c0=2.0
 ```
 
+### Monitoring a running simulation
+
+Redirect the run's own output to a file and `tail -f` it in another
+terminal -- shows every coarse step (`STEP = ... TIME = ...`), so it's
+also the way to watch `ic_mode = fourier_relaxed`'s pre-evolution/
+relaxation phase, which only prints its own `xi`-monitoring progress to
+this log, not to any data file:
+
+```bash
+... AxionStrings3d.llvm.MPI.ex params.txt > run.log 2>&1 &
+tail -f run.log
+```
+
+Once the main evolution is running, `network_scalars.dat` is written
+incrementally (one row appended per diagnostic snapshot, file reopened
+fresh each time), so a plain `tail -f` on it gives a terser, physics-only
+view of the same progress:
+
+```bash
+tail -f AxionStrings/network_scalars.dat
+```
+
 ## Unit tests
 
 `Background.hpp`, `BoxPlan.hpp`, `XiFormula.hpp`, `PlaquetteWinding.hpp`,

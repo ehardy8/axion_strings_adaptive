@@ -1,7 +1,21 @@
-# AxionStrings parameter file -- moderate-size (N=256) demo run with a
-# genuinely random Fourier-mode IC (ic_mode=fourier, no relaxation phase --
-# "quite random initial conditions"), physical evolution (c0=0), to produce
-# an xi-vs-log(m_r/H) curve and a final-timeshot energy-density projection.
+# AxionStrings parameter file -- moderate-size (N=256) demo run: fat string
+# (c0=1), relaxed via pre-evolution from a random Fourier IC down to xi~1
+# (the expected attractor/scaling value -- conventions.md sec.7/sec.8),
+# with the main evolution starting at log(m_r/H_i)=3, "when strings are
+# well formed objects" (2026-09-18, with the user, replacing an earlier,
+# unrelaxed-IC version of this run whose xi shot up to ~147 before
+# crashing -- that was the random IC's own transient defects, not a
+# resolution artifact: pre-evolution is exactly the fix, not a bigger
+# box or finer grid).
+#
+# Validated at small scale (N=32, same dx=1 this exponent-1/N1=N2=1
+# configuration gives regardless of N) before committing to this: the
+# pre-evolution phase relaxes smoothly and monotonically from xi~14 down
+# to the xi_target over Delta(tau_pre)~21.6 (N_p 7022 -> 482, a >14x
+# reduction) -- a genuine, non-trivial relaxation, not an instant/lucky
+# stop -- and xi stays close to ~1-1.12 through the start of the main
+# run afterward, confirming the handoff lands on the attractor as
+# expected.
 
 #################################################
 # Filesystem parameters
@@ -36,39 +50,56 @@ evolution.max_steps = -1
 # AxionStrings parameters
 
 axion_strings.a_inv = 2.0
-axion_strings.c0    = 0.0 # physical evolution
+axion_strings.c0    = 1.0 # fat string
 
-# m_r/H = 1 at the start.
-axion_strings.log_mr_over_h_i = 0.0
+# log(m_r/H) at the *main run's* start -- "when strings are well formed
+# objects", not at the very start of the network's own formation.
+axion_strings.log_mr_over_h_i = 3.0
 
 # Box planning: N=256 (box size), N1=1 (HL=1 at final time), N2=1
-# (m_r*Delta=1 at final time).
+# (m_r*Delta=1 at final time). For this a_inv/c0/N1/N2 combination,
+# delta_x (comoving) = 1 regardless of N -- verified directly (box-
+# planning printout), which is also why the small-scale validation run
+# (N=32) is directly parameter-transferable to this one.
 axion_strings.N  = 256
 axion_strings.N1 = 1.0
 axion_strings.N2 = 1.0
 
-# Genuinely random Fourier-mode IC, generated directly at tau_i -- no
-# pre-evolution relaxation ("quite random initial conditions").
-axion_strings.ic_mode = fourier
-#
-# k_max_over_mr = 1024, not O(1): physical mode (c0=0) keeps m_r constant
-# while the box's comoving dx is sized for the *final*-time resolution
-# target (N2), so at tau_i the grid is far finer than m_r needs -- m_r*dx
-# = 0.0625 here (found this the hard way: k_max_over_mr=1.0 gave
-# k_max_cells = k_max_over_mr*m_r*dx = 0.0625, below the smallest nonzero
-# mode, so *no* modes were populated at all and the "IC" was silently the
-# flat vacuum, not random). 1024 puts k_max_cells at half the grid's own
-# Nyquist frequency (128), i.e. genuinely broadband, confirmed at small
-# scale (N=16) to give an actively evolving, string-threaded field.
-axion_strings.k_max_over_mr        = 1024
-axion_strings.mean_square_variance = 0.5  # <|psi|^2> = 2*this = v^2 = 1
-axion_strings.seed = 42
+# Relax a Fourier-mode IC down to xi_target before continuing to the main
+# evolution, all in this one run (AxionStringsLevel::Phase).
+axion_strings.ic_mode = fourier_relaxed
 
-# Diagnostic output cadence: one snapshot every 0.1 in log(m_r/H), from the
-# very start.
-axion_strings.output_first_log_mr_over_h = 0.0
+# gamma = m_r/H during pre-evolution = m_r_pre(0) exactly (Pre
+# EvolutionBackground.hpp: lambda(0) = gamma^2, R(0) = 1). Chosen so the
+# core is resolved at the same m_r*dx = 1 convention used everywhere else
+# in this project (dx = 1 here, so gamma = 1 gives exactly that) -- NOT
+# tied to log_mr_over_h_i, which is a separate, main-run-only choice
+# (an earlier version of this file conflated the two).
+axion_strings.pre_evolution.gamma = 1.0
+
+# "xi ~ 1 is expected [on the attractor scaling solution]; anything else
+# is a sign something is badly wrong" -- the user's own statement.
+axion_strings.pre_evolution.xi_target = 1.0
+
+# Broadband IC for pre-evolution's own relaxation: k_max_cells =
+# k_max_over_mr * gamma * dx = k_max_over_mr here (gamma=dx=1), so 128
+# puts it at half this grid's Nyquist frequency (256/2). Confirmed at
+# small scale to relax to a clean, well-separated string configuration
+# (see the validation note above).
+axion_strings.pre_evolution.k_max_over_mr        = 128
+axion_strings.pre_evolution.mean_square_variance = 0.5  # <|psi|^2> = 2*this = v^2 = 1
+axion_strings.pre_evolution.seed = 42
+
+# Adaptive xi-check cadence during relaxation (defaults are coarse=50,
+# medium=10, fine=2 steps -- fine enough close to target; left as default
+# here since the small-scale validation used a much finer override
+# specifically to see the full trajectory for verification purposes).
+
+# Diagnostic output cadence for the main run: log(m_r/H) spans
+# [3, log(256)=5.545] here, so 0.1 gives ~25 snapshots.
+axion_strings.output_first_log_mr_over_h = 3.0
 axion_strings.output_delta_log_mr_over_h = 0.1
 
-# 2D energy-density projection at every snapshot (used for the final-
-# timeshot figure).
+# 2D energy-density projection at every main-run snapshot (used for the
+# final-timeshot figure).
 axion_strings.save_projection = 1

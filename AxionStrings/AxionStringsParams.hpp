@@ -213,6 +213,32 @@ inline XiCheckCadence read_xi_check_cadence()
     return cadence;
 }
 
+struct OutputCadence
+{
+    double first_log_mr_over_h{};
+    double delta_log_mr_over_h{};
+};
+
+// Main-run diagnostic output cadence (2026-09-18, with the user): the full
+// per-snapshot diagnostics (plaquette count, energy/velocity reductions,
+// the spectrum FFT) are too expensive to repeat every coarse step, so they
+// only run at snapshots spaced by delta_log_mr_over_h in log(m_r/H),
+// starting from the first snapshot at first_log_mr_over_h -- both required
+// (no default value is fixed in conventions.md, and a silent default here
+// would itself be a physics-adjacent numerical choice).
+inline OutputCadence read_output_cadence()
+{
+    GRParmParse pp("axion_strings");
+    OutputCadence cadence{};
+    pp.get("output_first_log_mr_over_h", cadence.first_log_mr_over_h);
+    pp.get("output_delta_log_mr_over_h", cadence.delta_log_mr_over_h);
+    if (cadence.delta_log_mr_over_h <= 0.0)
+    {
+        pp.error("output_delta_log_mr_over_h", "must be > 0");
+    }
+    return cadence;
+}
+
 // Masking (conventions.md sec.10, milestone-1.md task 1.7). The threshold
 // is a runtime parameter, never a compile-time constant (CLAUDE.md
 // constraint 4) -- it will be scanned; conventions.md sec.10/sec.14 record
@@ -514,6 +540,30 @@ inline void check_params()
         // the pre-evolution handoff via restart_from_pre_evolution, or an
         // ordinary resumption of the main run's own progress) -- nothing
         // further to validate here.
+
+        read_output_cadence();
+
+        // The persisted spectrum (axion_spectrum.dat) is only useful if it
+        // is genuinely screened -- scheme "A" has no top-hat at all, and
+        // "none" is the raw unscreened field -- so require scheme B
+        // whenever the routine per-snapshot spectrum output is on. (The
+        // plane_wave_test IC's own one-shot spectrum check in initData()
+        // is a separate, self-contained identity check that hardcodes
+        // MaskingScheme::None regardless of this setting, so it is
+        // unaffected.)
+        bool compute_spectrum_flag = false;
+        GRParmParse spectrum_pp("axion_strings");
+        spectrum_pp.queryAdd("compute_spectrum", compute_spectrum_flag);
+        if (compute_spectrum_flag &&
+            read_masking_params("axion_strings.masking").scheme !=
+                MaskingScheme::B)
+        {
+            spectrum_pp.error(
+                "compute_spectrum",
+                "requires axion_strings.masking.scheme = B -- the "
+                "spectrum saved to axion_spectrum.dat must be the "
+                "genuinely screened field");
+        }
     }
 }
 

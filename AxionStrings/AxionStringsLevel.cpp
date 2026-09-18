@@ -34,6 +34,8 @@ void AxionStringsLevel::variableSetUp()
     {
         s_energy_masking =
             AxionStringsParams::read_masking_params("axion_strings.masking");
+        s_output_cadence = AxionStringsParams::read_output_cadence();
+        s_next_output_log_mr_over_h = s_output_cadence.first_log_mr_over_h;
     }
 }
 
@@ -412,14 +414,37 @@ void AxionStringsLevel::specific_post_timestep()
     }
 
     amrex::MultiFab &state_new = get_new_data(state_index);
+
+    const amrex::Real a_time_now = get_state_data(state_index).curTime();
+    const amrex::Real tau        = s_tau_i + a_time_now;
+
+    // Output cadence (2026-09-18, with the user): the diagnostics below
+    // (a full-grid plaquette count, energy/velocity reductions, an FFT)
+    // are far too expensive to repeat every coarse step. m_r/H is
+    // available for free from the analytic background (no grid pass), so
+    // check it every step and only do the expensive work -- and only
+    // write a snapshot -- once log(m_r/H) has reached the next threshold,
+    // starting at axion_strings.output_first_log_mr_over_h and spaced by
+    // axion_strings.output_delta_log_mr_over_h thereafter. The `while`
+    // (not a single add) means a step that jumps past more than one
+    // threshold still lands on the correct next one rather than drifting.
+    const double log_mr_over_h =
+        -std::log(static_cast<double>(s_background.H_over_mr_direct(tau)));
+    if (log_mr_over_h < s_next_output_log_mr_over_h)
+    {
+        return;
+    }
+    while (s_next_output_log_mr_over_h <= log_mr_over_h)
+    {
+        s_next_output_log_mr_over_h += s_output_cadence.delta_log_mr_over_h;
+    }
+
     // count_plaquettes reads the (i+1,j+1,k+1) neighbours of every valid
     // cell, so needs at least 1 valid ghost cell first.
     state_new.FillBoundary(Geom().periodicity());
 
     const PlaquetteCounts counts = count_plaquettes(state_new);
 
-    const amrex::Real a_time_now = get_state_data(state_index).curTime();
-    const amrex::Real tau        = s_tau_i + a_time_now;
     const double dx              = Geom().CellSize(0);
     const double L_tilde         = Geom().ProbLength(0);
     const double a_inv           = s_background.a_inv;
@@ -477,11 +502,12 @@ void AxionStringsLevel::specific_post_timestep()
     // contribution approximately removes propagating axion wave energy
     // too: a free wave has equal kinetic/gradient energy on average, so
     // that difference cancels the wave's contribution and leaves only the
-    // string's own static long-range tail. Printed here as a convenience,
-    // interactive-use diagnostic only -- not saved to network_scalars.dat,
-    // since the point of saving every raw screened/unscreened component
-    // (below) is to let this and any other combination be reconstructed
-    // afterwards without having picked one formula in advance.
+    // string's own static long-range tail. Also saved to network_scalars
+    // .dat below (2026-09-18, with the user: "we may as well save the
+    // processed tension, even if it can be reconstructed") alongside every
+    // raw screened/unscreened component, so both this and any other
+    // combination remain reconstructable afterwards without having picked
+    // one formula in advance.
     const double sum_core_rho_tot =
         energy.n_total * energy.rho_tot_unscreened -
         energy.n_unmasked * energy.rho_tot_screened;
@@ -522,11 +548,36 @@ void AxionStringsLevel::specific_post_timestep()
                    << "  <gamma> = " << mean_gamma
                    << "  N_corners = " << velocity.count << "\n";
 
-    const amrex::Real dt =
-        a_time_now - get_state_data(state_index).prevTime();
-    SmallDataIO network_scalars_file("network_scalars", dt, tau, 0.0,
-                                     SmallDataIO::APPEND);
-    if (!s_wrote_network_scalars_header)
+    // Restart-safe output bookkeeping (2026-09-18, fixing a bug flagged
+    // earlier): a genuine restart is detected via amr.restart (not our own
+    // tau_i-relative clock, since GRAmr::get_restart_time() -- set at
+    // post_init/post_restart -- reports 0 even for a fresh run, and our
+    // tau starts at tau_i != 0, so "> 0" alone cannot tell the two apart).
+    // first_step true only for a brand-new run's very first snapshot,
+    // which makes SmallDataIO rename any pre-existing file to
+    // ".old.<random>" instead of silently appending to it (the original
+    // bug); false on a real restart, which instead opens the existing
+    // file for read+append so remove_duplicate_time_data() below can trim
+    // any provisional rows from a run segment that is being redone.
+    const bool is_restart =
+        amrex::ParmParse("amr").countval("restart") > 0;
+    const amrex::Real restart_time_tau =
+        is_restart ? amrex::Real(s_tau_i + get_gr_amr_ptr()->get_restart_time())
+                  : amrex::Real(0.0);
+    // Passing tau itself as "dt" (rather than the numerical sub-step) is
+    // deliberate: it guarantees SmallDataIO's restart-detection window
+    // (m_time < m_restart_time + m_dt + eps) covers the first post-restart
+    // snapshot regardless of how large the log(m_r/H)-spaced gap to it is,
+    // while being a complete no-op on a fresh run (m_restart_time = 0
+    // sentinel there).
+    const bool first_network_scalars_step =
+        !is_restart && !s_wrote_network_scalars_header;
+    s_wrote_network_scalars_header = true;
+
+    SmallDataIO network_scalars_file("network_scalars", tau, tau,
+                                     restart_time_tau, SmallDataIO::APPEND,
+                                     first_network_scalars_step);
+    if (first_network_scalars_step)
     {
         network_scalars_file.write_header_line(
             {"N_p", "N_p_weighted", "xi", "xi_weighted", "m_r_over_H",
@@ -534,9 +585,10 @@ void AxionStringsLevel::specific_post_timestep()
              "rho_axion_kin_unscreened", "rho_axion_kin_screened",
              "rho_axion_grad_unscreened", "rho_axion_grad_screened",
              "n_total", "n_unmasked", "mean_gamma_sq_v_sq", "mean_gamma",
-             "n_velocity_corners"});
-        s_wrote_network_scalars_header = true;
+             "n_velocity_corners", "tension_core_only",
+             "tension_core_plus_tail"});
     }
+    network_scalars_file.remove_duplicate_time_data();
     const std::vector<amrex::Real> data_row{
         static_cast<amrex::Real>(counts.n_p_plain),
         static_cast<amrex::Real>(counts.n_p_weighted),
@@ -553,7 +605,9 @@ void AxionStringsLevel::specific_post_timestep()
         static_cast<amrex::Real>(energy.n_unmasked),
         static_cast<amrex::Real>(mean_gamma_sq_v_sq),
         static_cast<amrex::Real>(mean_gamma),
-        static_cast<amrex::Real>(velocity.count)};
+        static_cast<amrex::Real>(velocity.count),
+        static_cast<amrex::Real>(tension_core_only),
+        static_cast<amrex::Real>(tension_core_plus_tail)};
     network_scalars_file.write_time_data_line(data_row);
 
     // Spectrum (conventions.md sec.9/sec.12, milestone-1.md task 1.9):
@@ -614,6 +668,56 @@ void AxionStringsLevel::specific_post_timestep()
             << (spectrum.full_cube_energy / spectrum.inscribed_sphere_energy)
             << "  shell-binned integral (sum_s S(s)/n_total^2, approximate) = "
             << shell_integral << "\n";
+
+        // Persisted to axion_spectrum.dat (2026-09-18, with the user): the
+        // shape S(p) is what a spectral index q actually gets measured
+        // from, so it must be saved, not just cross-checked in the log.
+        // AxionStringsParams::check_params() guarantees s_energy_masking
+        // .scheme == B whenever compute_spectrum is on, so this is always
+        // the genuinely screened field (CLAUDE.md constraint 6: the
+        // masking scheme is recorded once, in parameters_and_version.txt,
+        // alongside every quoted spectrum).
+        //
+        // tau is repeated as the first column on every row (not just once
+        // per block) rather than using SmallDataIO's blank-line block
+        // separators, so that a single flat scan (network_scalars.dat's
+        // own remove_duplicate_time_data(), which assumes the first
+        // column is always time) is still exactly correct for trimming
+        // provisional rows after a restart -- a blank line there would
+        // break its std::stod parse.
+        const bool first_spectrum_step =
+            !is_restart && !s_wrote_spectrum_header;
+        s_wrote_spectrum_header = true;
+
+        SmallDataIO axion_spectrum_file("axion_spectrum", tau, tau,
+                                        restart_time_tau, SmallDataIO::APPEND,
+                                        first_spectrum_step);
+        if (first_spectrum_step)
+        {
+            const std::vector<std::string> spectrum_header{
+                "shell_average", "full_cube_energy",
+                "inscribed_sphere_energy", "real_space_mean_sq",
+                "parseval_full", "parseval_inscribed"};
+            const std::vector<std::string> spectrum_pre_header{"tau",
+                                                               "mode_index"};
+            axion_spectrum_file.write_header_line(spectrum_header,
+                                                  spectrum_pre_header);
+        }
+        axion_spectrum_file.remove_duplicate_time_data();
+        for (std::size_t mode_index = 0;
+            mode_index < spectrum.shell_average.size(); ++mode_index)
+        {
+            const std::vector<amrex::Real> coords{
+                tau, static_cast<amrex::Real>(mode_index)};
+            const std::vector<amrex::Real> row{
+                static_cast<amrex::Real>(spectrum.shell_average[mode_index]),
+                static_cast<amrex::Real>(spectrum.full_cube_energy),
+                static_cast<amrex::Real>(spectrum.inscribed_sphere_energy),
+                static_cast<amrex::Real>(real_space_mean_sq),
+                static_cast<amrex::Real>(parseval_from_spectrum_full),
+                static_cast<amrex::Real>(parseval_from_spectrum_inscribed)};
+            axion_spectrum_file.write_data_line(row, coords);
+        }
     }
 }
 

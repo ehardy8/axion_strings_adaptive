@@ -8,9 +8,15 @@
 #################################################
 # Filesystem parameters
 
+# Ensemble runs don't save the full 3D grid at all (2026-09-18, with the
+# user): checkpoints and plotfiles are off by default. Set check_int/
+# plot_int >= 0 explicitly for a one-off run you actually want to inspect
+# or restart from its own checkpoint (as opposed to Mode::PreEvolution's
+# handoff checkpoint, which is required regardless -- see
+# AxionStringsParams::check_params).
 amr.verbose = 1
 amr.check_int = -1
-amr.plot_int  = 2
+amr.plot_int  = -1
 
 #################################################
 # Grid parameters
@@ -50,3 +56,12 @@ axion_strings.c0 = 0.0
 
 # Conformal time at which the run starts (a_time = 0 here)
 axion_strings.tau_i = 1.0
+
+# Diagnostic output cadence (2026-09-18, with the user): the full
+# per-snapshot diagnostics (plaquette count, energy/velocity reductions)
+# are too expensive to repeat every coarse step, so they only run at
+# snapshots spaced by output_delta_log_mr_over_h in log(m_r/H), starting
+# from the first snapshot at output_first_log_mr_over_h. Both required --
+# no default is fixed in conventions.md.
+axion_strings.output_first_log_mr_over_h = 0.0
+axion_strings.output_delta_log_mr_over_h = 0.05

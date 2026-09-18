@@ -60,12 +60,23 @@ class AxionStringsLevel : public GRAmrLevel
     inline static long s_xi_check_interval{50};
     inline static bool s_pre_evolution_target_reached{false};
 
-    // Whether the network_scalars.dat header has been written yet.
+    // Whether each output file's header has been written yet (fresh-run
+    // bookkeeping only -- a genuine restart never re-writes a header, see
+    // specific_post_timestep).
     inline static bool s_wrote_network_scalars_header{false};
+    inline static bool s_wrote_spectrum_header{false};
 
     // Screening used for the energy diagnostics (task 1.8) -- a runtime
     // parameter, never a compile-time constant (CLAUDE.md constraint 4).
     inline static MaskingParams s_energy_masking{};
+
+    // Output cadence (2026-09-18, with the user): the full per-snapshot
+    // diagnostics only run once log(m_r/H) has advanced past
+    // s_next_output_log_mr_over_h, which starts at
+    // axion_strings.output_first_log_mr_over_h and is bumped by
+    // axion_strings.output_delta_log_mr_over_h each time it is crossed.
+    inline static AxionStringsParams::OutputCadence s_output_cadence{};
+    inline static double s_next_output_log_mr_over_h{0.0};
 
   private:
 

@@ -70,6 +70,48 @@ Tracks progress against `milestone-1.md` task by task. Updated as work lands.
   careful measurement protocol. Paused here to check in with the user before
   pursuing further.
 
+- **Accepted, not fixed (2026-09-18, with the user): `straight_string_test`'s
+  phase field is not periodic on the torus, and this is not just a cosmetic
+  issue.** Found via the new `axion_strings.save_projection` visualisation
+  (task: output infrastructure follow-up) -- the projected energy's global
+  max sat away from either string core, which the user correctly flagged as
+  physically implausible rather than accepting at face value. Root cause,
+  confirmed independently of any AMReX/simulation code (a from-scratch
+  Python re-evaluation of the exact IC formula) and via instrumented debug
+  prints of the real running field (which also ruled out a ghost-cell bug --
+  periodic wrapping was confirmed correct): `theta = atan2(y-y1,x-x1) -
+  atan2(y-y2,x-x2)` is evaluated from literal, non-periodic `(x,y)`, so it
+  is simply not periodic in `y` when both vortices share the same `y`
+  (the `y=0<->y=L_y` seam, diametrically opposite them, is where this shows
+  up worst). Tried the user's proposed fix (summing periodic images of the
+  phase): **does not converge** -- a square truncation window plateaus at
+  one residual, a circular window at a *different* one, the classic
+  signature of a conditionally-convergent lattice sum (the same
+  mathematical issue Ewald summation exists to solve for periodic dipole
+  lattices; growing the truncation window doesn't help). Quantified how the
+  residual scales with box size at fixed string separation and fixed grid
+  resolution instead: the local psi-jump shrinks like `1/L`, so the local
+  peak energy *density* and domain average shrink like `1/L^2` (fast enough
+  that by `L/separation ~ 8` the seam's peak density already drops below
+  the core's own, resolving the "impossible" visual finding) -- but the
+  *total, summed* spurious energy (the quantity that actually feeds
+  `tension_core_only`, since that is built from `n_total * average`, i.e. a
+  sum) converges toward a roughly constant floor rather than vanishing, so
+  growing the box does not make the T1 tension number itself trustworthy at
+  high precision. **Decision: live with it.** A real string network (the
+  actual production case) never uses this closed-form two-vortex construction
+  at all -- ICs there come from `FourierIC.hpp`'s Gaussian random field, not
+  an analytic vortex ansatz, so this specific non-periodicity mechanism does
+  not apply there. Left unfixed rather than pursuing a rigorous periodic
+  Green's function or an IC-relaxation pass, both real options if this ever
+  needs revisiting. **Flagged to keep in mind**: if an unexplained energy
+  excess, gradient anomaly, or "value doesn't peak where it should" symptom
+  ever resurfaces in a *different* context (in particular anything using an
+  analytic closed-form phase/winding construction rather than the Fourier-
+  mode network ICs), this class of bug -- a smooth-looking formula that
+  quietly assumes an infinite, non-periodic domain -- is worth checking for
+  again before assuming it is something new.
+
 - `Background::H_over_mr_closed_form` only equals `H_over_mr_direct` in the
   no-switch case (verified analytically and by unit test). Across a c(tau)
   switch, the sec.5 closed form `(tau/tau0)^((c-a_inv)/(a_inv-1))` does not

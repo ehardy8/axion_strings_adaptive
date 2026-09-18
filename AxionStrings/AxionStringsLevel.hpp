@@ -65,6 +65,7 @@ class AxionStringsLevel : public GRAmrLevel
     // specific_post_timestep).
     inline static bool s_wrote_network_scalars_header{false};
     inline static bool s_wrote_spectrum_header{false};
+    inline static bool s_wrote_projection_header{false};
 
     // Screening used for the energy diagnostics (task 1.8) -- a runtime
     // parameter, never a compile-time constant (CLAUDE.md constraint 4).

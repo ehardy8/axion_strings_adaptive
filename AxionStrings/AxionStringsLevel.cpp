@@ -5,6 +5,7 @@
 #include "FixedGridsTagger.hpp"
 #include "FourierIC.hpp"
 #include "MaskedFieldBuffer.hpp"
+#include "ProjectionKernel.hpp"
 #include "SmallDataIO.hpp"
 #include "SpectrumKernel.hpp"
 #include "StateTypes.hpp"
@@ -615,68 +616,87 @@ void AxionStringsLevel::specific_post_timestep()
     // axion_strings.compute_spectrum. Masking is applied at exactly one
     // place -- MaskedFieldBuffer.hpp, filling the buffer handed to the FFT
     // -- per CLAUDE.md constraint 5.
+    //
+    // Both the screened (s_energy_masking, guaranteed scheme B by
+    // AxionStringsParams::check_params() whenever this flag is on) and
+    // unscreened (MaskingScheme::None, mirroring the plane_wave_test IC's
+    // own check) spectra are computed and saved side by side (2026-09-18,
+    // with the user: "output the unscreened spectrum to allow for
+    // comparison and judging the impact of screening").
     bool compute_spectrum_flag = false;
     amrex::ParmParse("axion_strings")
         .queryAdd("compute_spectrum", compute_spectrum_flag);
     if (compute_spectrum_flag)
     {
-        amrex::MultiFab a_dot_buffer(state_new.boxArray(),
-                                     state_new.DistributionMap(), 1, 0);
-        fill_masked_a_dot_buffer(a_dot_buffer, state_new, s_energy_masking,
-                                 s_background.R(tau));
-        const Spectrum spectrum = compute_spectrum(a_dot_buffer, Geom());
-
-        // Direct real-space mean square of the exact same buffer that was
-        // fed to the FFT -- the honest way to get <(masked a_dot)^2>,
-        // rather than trying to back it out of axion_kinetic_energy's own
-        // f_a^2/2 prefactors (error-prone; avoided deliberately).
-        const double sum_sq = static_cast<double>(amrex::MultiFab::Dot(
-            a_dot_buffer, 0, a_dot_buffer, 0, 1, 0));
-        const double real_space_mean_sq = sum_sq / energy.n_total;
-
-        const double n_total_sq = energy.n_total * energy.n_total;
-        // Parseval (conventions.md sec.9, verified with the user): a
-        // spatial *average* of a squared real field equals
-        // Sum_p|X_p|^2 / N_total^2 (one factor of N_total from the
-        // average itself, one from Parseval for this "no normalisation,
-        // round-trip = N_total" FFT convention) -- exact, independent of
-        // how the shell-binning below groups modes.
-        const double parseval_from_spectrum_full =
-            spectrum.full_cube_energy / n_total_sq;
-        const double parseval_from_spectrum_inscribed =
-            spectrum.inscribed_sphere_energy / n_total_sq;
-
-        // S(p) needs the same /n_total_sq as the two Parseval sums above
-        // (it too is built from raw |X_p|^2); even then this is only
-        // approximate, not exact, since a single shell can mix modes with
-        // very different power (unlike the full-cube/inscribed-sphere
-        // sums, which include every mode exactly once).
-        double shell_integral = 0.0;
-        for (double s : spectrum.shell_average)
+        auto compute_and_report_spectrum =
+            [&](const MaskingParams &masking, const char *label)
         {
-            shell_integral += s; // integral over |k|, bin width 1
-        }
-        shell_integral /= n_total_sq;
+            amrex::MultiFab a_dot_buffer(state_new.boxArray(),
+                                         state_new.DistributionMap(), 1, 0);
+            fill_masked_a_dot_buffer(a_dot_buffer, state_new, masking,
+                                     s_background.R(tau));
+            const Spectrum spectrum = compute_spectrum(a_dot_buffer, Geom());
 
-        amrex::Print()
-            << "  [AxionStrings spectrum] <a_dot^2> real-space = "
-            << real_space_mean_sq
-            << "  Parseval (full cube) = " << parseval_from_spectrum_full
-            << "  Parseval (inscribed sphere) = "
-            << parseval_from_spectrum_inscribed << "\n"
-            << "    full_cube/inscribed_sphere ratio = "
-            << (spectrum.full_cube_energy / spectrum.inscribed_sphere_energy)
-            << "  shell-binned integral (sum_s S(s)/n_total^2, approximate) = "
-            << shell_integral << "\n";
+            // Direct real-space mean square of the exact same buffer that
+            // was fed to the FFT -- the honest way to get <(masked
+            // a_dot)^2>, rather than trying to back it out of
+            // axion_kinetic_energy's own f_a^2/2 prefactors (error-prone;
+            // avoided deliberately). None's weight is 1 everywhere, so
+            // energy.n_total (not n_unmasked) is the right divisor for
+            // both cases.
+            const double sum_sq = static_cast<double>(amrex::MultiFab::Dot(
+                a_dot_buffer, 0, a_dot_buffer, 0, 1, 0));
+            const double real_space_mean_sq = sum_sq / energy.n_total;
+
+            const double n_total_sq = energy.n_total * energy.n_total;
+            // Parseval (conventions.md sec.9, verified with the user): a
+            // spatial *average* of a squared real field equals
+            // Sum_p|X_p|^2 / N_total^2 (one factor of N_total from the
+            // average itself, one from Parseval for this "no
+            // normalisation, round-trip = N_total" FFT convention) --
+            // exact, independent of how the shell-binning below groups
+            // modes.
+            const double parseval_full =
+                spectrum.full_cube_energy / n_total_sq;
+            const double parseval_inscribed =
+                spectrum.inscribed_sphere_energy / n_total_sq;
+
+            double shell_integral = 0.0;
+            for (double s : spectrum.shell_average)
+            {
+                shell_integral += s; // integral over |k|, bin width 1
+            }
+            shell_integral /= n_total_sq;
+
+            amrex::Print()
+                << "  [AxionStrings spectrum, " << label
+                << "] <a_dot^2> real-space = " << real_space_mean_sq
+                << "  Parseval (full cube) = " << parseval_full
+                << "  Parseval (inscribed sphere) = " << parseval_inscribed
+                << "\n"
+                << "    full_cube/inscribed_sphere ratio = "
+                << (spectrum.full_cube_energy /
+                   spectrum.inscribed_sphere_energy)
+                << "  shell-binned integral (sum_s S(s)/n_total^2, "
+                  "approximate) = "
+                << shell_integral << "\n";
+
+            return std::make_tuple(spectrum, real_space_mean_sq,
+                                   parseval_full, parseval_inscribed);
+        };
+
+        MaskingParams none_masking{};
+        none_masking.scheme = MaskingScheme::None;
+        const auto [spectrum_screened, real_space_mean_sq_screened,
+                   parseval_full_screened, parseval_inscribed_screened] =
+            compute_and_report_spectrum(s_energy_masking, "screened");
+        const auto [spectrum_unscreened, real_space_mean_sq_unscreened,
+                   parseval_full_unscreened, parseval_inscribed_unscreened] =
+            compute_and_report_spectrum(none_masking, "unscreened");
 
         // Persisted to axion_spectrum.dat (2026-09-18, with the user): the
         // shape S(p) is what a spectral index q actually gets measured
         // from, so it must be saved, not just cross-checked in the log.
-        // AxionStringsParams::check_params() guarantees s_energy_masking
-        // .scheme == B whenever compute_spectrum is on, so this is always
-        // the genuinely screened field (CLAUDE.md constraint 6: the
-        // masking scheme is recorded once, in parameters_and_version.txt,
-        // alongside every quoted spectrum).
         //
         // tau is repeated as the first column on every row (not just once
         // per block) rather than using SmallDataIO's blank-line block
@@ -695,28 +715,98 @@ void AxionStringsLevel::specific_post_timestep()
         if (first_spectrum_step)
         {
             const std::vector<std::string> spectrum_header{
-                "shell_average", "full_cube_energy",
-                "inscribed_sphere_energy", "real_space_mean_sq",
-                "parseval_full", "parseval_inscribed"};
+                "shell_average_screened", "shell_average_unscreened",
+                "full_cube_energy_screened", "full_cube_energy_unscreened",
+                "inscribed_sphere_energy_screened",
+                "inscribed_sphere_energy_unscreened",
+                "real_space_mean_sq_screened",
+                "real_space_mean_sq_unscreened", "parseval_full_screened",
+                "parseval_full_unscreened", "parseval_inscribed_screened",
+                "parseval_inscribed_unscreened"};
             const std::vector<std::string> spectrum_pre_header{"tau",
                                                                "mode_index"};
             axion_spectrum_file.write_header_line(spectrum_header,
                                                   spectrum_pre_header);
         }
         axion_spectrum_file.remove_duplicate_time_data();
+        // Both spectra share the same domain/binning, so their
+        // shell_average vectors are always the same length.
         for (std::size_t mode_index = 0;
-            mode_index < spectrum.shell_average.size(); ++mode_index)
+            mode_index < spectrum_screened.shell_average.size();
+            ++mode_index)
         {
             const std::vector<amrex::Real> coords{
                 tau, static_cast<amrex::Real>(mode_index)};
             const std::vector<amrex::Real> row{
-                static_cast<amrex::Real>(spectrum.shell_average[mode_index]),
-                static_cast<amrex::Real>(spectrum.full_cube_energy),
-                static_cast<amrex::Real>(spectrum.inscribed_sphere_energy),
-                static_cast<amrex::Real>(real_space_mean_sq),
-                static_cast<amrex::Real>(parseval_from_spectrum_full),
-                static_cast<amrex::Real>(parseval_from_spectrum_inscribed)};
+                static_cast<amrex::Real>(
+                    spectrum_screened.shell_average[mode_index]),
+                static_cast<amrex::Real>(
+                    spectrum_unscreened.shell_average[mode_index]),
+                static_cast<amrex::Real>(spectrum_screened.full_cube_energy),
+                static_cast<amrex::Real>(
+                    spectrum_unscreened.full_cube_energy),
+                static_cast<amrex::Real>(
+                    spectrum_screened.inscribed_sphere_energy),
+                static_cast<amrex::Real>(
+                    spectrum_unscreened.inscribed_sphere_energy),
+                static_cast<amrex::Real>(real_space_mean_sq_screened),
+                static_cast<amrex::Real>(real_space_mean_sq_unscreened),
+                static_cast<amrex::Real>(parseval_full_screened),
+                static_cast<amrex::Real>(parseval_full_unscreened),
+                static_cast<amrex::Real>(parseval_inscribed_screened),
+                static_cast<amrex::Real>(parseval_inscribed_unscreened)};
             axion_spectrum_file.write_data_line(row, coords);
+        }
+    }
+
+    // Optional 2D visualisation snapshot (output follow-up, 2026-09-18,
+    // with the user): off by default, since it is only for spot-checking
+    // the run by eye, not a routine diagnostic. See ProjectionKernel.hpp
+    // for why it's a line-of-sight max of the *unscreened* rho_tot (fixed
+    // to the z-axis) plus an overlaid xy-plaquette string-hit count.
+    bool save_projection_flag = false;
+    amrex::ParmParse("axion_strings")
+        .queryAdd("save_projection", save_projection_flag);
+    if (save_projection_flag)
+    {
+        const Projection projection = compute_energy_projection(
+            state_new, dx, s_background.R(tau), lambda, s_background.b_inv,
+            tau, Geom().Domain());
+
+        const bool first_projection_step =
+            !is_restart && !s_wrote_projection_header;
+        s_wrote_projection_header = true;
+
+        SmallDataIO axion_projection_file(
+            "axion_projection", tau, tau, restart_time_tau,
+            SmallDataIO::APPEND, first_projection_step);
+        if (first_projection_step)
+        {
+            const std::vector<std::string> projection_header{
+                "rho_tot_max_unscreened", "string_hit_count"};
+            const std::vector<std::string> projection_pre_header{
+                "tau", "i", "j"};
+            axion_projection_file.write_header_line(projection_header,
+                                                     projection_pre_header);
+        }
+        axion_projection_file.remove_duplicate_time_data();
+        for (int i = 0; i < projection.nx; ++i)
+        {
+            for (int j = 0; j < projection.ny; ++j)
+            {
+                const std::size_t idx =
+                    static_cast<std::size_t>(i) *
+                        static_cast<std::size_t>(projection.ny) +
+                    static_cast<std::size_t>(j);
+                const std::vector<amrex::Real> coords{
+                    tau, static_cast<amrex::Real>(i),
+                    static_cast<amrex::Real>(j)};
+                const std::vector<amrex::Real> row{
+                    static_cast<amrex::Real>(
+                        projection.rho_tot_max_unscreened[idx]),
+                    static_cast<amrex::Real>(projection.string_hit_count[idx])};
+                axion_projection_file.write_data_line(row, coords);
+            }
         }
     }
 }

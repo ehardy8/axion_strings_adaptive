@@ -1,0 +1,56 @@
+# N=256 test of the fat->Moore switch (2026-09-19, with the user): fat
+# string relaxed via pre-evolution to xi=1, main fat evolution from
+# log(m_r/H_i)=3 up to the Moore switch at log(m_r/H)=5, then Moore
+# (c=a_inv) for the remainder, auto-stopping at the derived tau_end.
+#
+# Box planning (N=256, N1=N2=1, matching every prior fat demo run's
+# convention): dx=1, L_tilde=256 -- same box as params_demo_256_screened.txt
+# (dx = b_inv/N2 is exactly constant through the whole fat phase, so this
+# is unsurprising, not a coincidence).
+#
+# By hand (AxionStringsParams.hpp will print and confirm these):
+#   tau_switch = exp(5) = 148.413, gamma = tau_switch (fat c0=1 identity)
+#   D = 2*log(N/(N2*N1*gamma)) = 2*log(256/148.413) = 1.091
+#   tau_end = tau_switch*exp(D*b_inv/a_inv) = 256.0
+# i.e. a modest (~e^1.09 ~ 3x shrink in H) Moore dynamic range for this
+# small-scale test.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+amr.max_level = 0
+amr.max_grid_size   = 64
+amr.blocking_factor = 32
+amr.n_error_buf     = 1
+
+geometry.is_periodic = 1 1 1
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = -1
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 1.0 # fat
+
+axion_strings.log_mr_over_h_i = 3.0
+
+axion_strings.N  = 256
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+axion_strings.ic_mode = fourier_relaxed
+axion_strings.pre_evolution.gamma = 1.0
+axion_strings.pre_evolution.xi_target = 1.0
+axion_strings.pre_evolution.k_max_over_mr        = 128
+axion_strings.pre_evolution.mean_square_variance = 0.5
+axion_strings.pre_evolution.seed = 42
+
+# The new bit: switch to Moore once log(m_r/H) reaches this value.
+axion_strings.log_mr_over_h_switch = 5.0
+
+axion_strings.masking.scheme = B
+axion_strings.compute_spectrum = 1
+
+axion_strings.output_first_log_mr_over_h = 3.0
+axion_strings.output_delta_log_mr_over_h = 0.1
+
+axion_strings.save_projection = 1

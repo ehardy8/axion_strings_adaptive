@@ -26,8 +26,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from axion_analysis import (
-    Background, L_tilde_general, instantaneous_emission, load_axion_spectrum,
-    load_network_scalars, nearest_snapshot_for_delta_log,
+    L_tilde_general, detect_background, instantaneous_emission,
+    load_axion_spectrum, load_network_scalars, nearest_snapshot_for_delta_log,
 )
 
 NETWORK_FILE = sys.argv[1] if len(sys.argv) > 1 else "network_scalars.dat"
@@ -39,11 +39,28 @@ N = int(sys.argv[6]) if len(sys.argv) > 6 else 256
 DELTA_LOG = float(sys.argv[7]) if len(sys.argv) > 7 else 0.2
 TITLE_TAG = sys.argv[8] if len(sys.argv) > 8 else f"N={N}"
 
-bg = Background(A_INV, C0)
+net = load_network_scalars(NETWORK_FILE)
+# detect_background, not a plain Background(A_INV, C0): see
+# plot_run_summary.py's identical fix (2026-09-19) -- a fat->Moore switch
+# freezes log(m_r/H), which a switch-unaware Background gets badly wrong.
+bg = detect_background(net, A_INV, C0)
 L_tilde = L_tilde_general(N, A_INV, C0)
 
 spec = load_axion_spectrum(SPECTRUM_FILE)
 spec_taus = np.unique(spec["tau"])
+
+# This extraction pairs snapshots by "Delta log(m_r/H) apart", which is
+# meaningless once log(m_r/H) is frozen during Moore (every Moore snapshot
+# has the *same* value) -- not yet extended to use a Moore-appropriate
+# coordinate (D_elapsed, as AxionStringsLevel's own output cadence now
+# does -- see docs/STATUS.md). Restrict to the fat-phase portion of the
+# run for now rather than silently mispairing Moore snapshots.
+if bg.has_switch:
+    n_before = len(spec_taus)
+    spec_taus = spec_taus[spec_taus < bg.tau_switch]
+    print(f"Detected a fat->Moore switch at tau_switch={bg.tau_switch:.6g} -- "
+         f"F(k/H) extraction is not yet Moore-aware, restricting to the "
+         f"{len(spec_taus)}/{n_before} fat-phase snapshots (tau < tau_switch)")
 
 # Reference (later) snapshots to show F at: spread across the run, skipping
 # the very first one or two (right at/near the pre-evolution handoff, which

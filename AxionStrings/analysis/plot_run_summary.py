@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from axion_analysis import (
-    F_A, Background, L_tilde_general, k_over_H, load_axion_spectrum,
+    F_A, L_tilde_general, detect_background, k_over_H, load_axion_spectrum,
     load_network_scalars, v3_drho_dk,
 )
 
@@ -36,11 +36,18 @@ C0 = float(sys.argv[5]) if len(sys.argv) > 5 else 1.0
 N = int(sys.argv[6]) if len(sys.argv) > 6 else 256
 TITLE_TAG = sys.argv[7] if len(sys.argv) > 7 else f"N={N}"
 
-bg = Background(A_INV, C0)
 L_TILDE = L_tilde_general(N, A_INV, C0)
 
 net = load_network_scalars(NETWORK_FILE)
 tau = net["tau"]
+# detect_background (not a plain Background(A_INV, C0)): a fat->Moore
+# switch freezes m_r_over_H from tau_switch onward, which a switch-unaware
+# Background would get badly wrong for every post-switch row (caught via
+# this exact mismatch on the first N=256 Moore-switch run, 2026-09-19).
+bg = detect_background(net, A_INV, C0)
+if bg.has_switch:
+    print(f"Detected a fat->Moore switch at tau_switch={bg.tau_switch:.6g} "
+         f"(gamma={np.exp(bg.log_mr_over_h(bg.tau_switch)):.6g})")
 log_mr_over_h = bg.log_mr_over_h(tau)
 
 # Cross-check: m_r/H from the file vs. this module's own Background(tau).
@@ -52,14 +59,29 @@ print(
 print(f"L_tilde (recomputed) = {L_TILDE:.6g}")
 
 # ---------------------------------------------------------------------------
-# xi vs log(m_r/H)
+# xi vs log(m_r/H) -- or log(tau) when a Moore switch is present (2026-09-19,
+# with the user): log(m_r/H) is exactly what Moore freezes, so every
+# Moore-phase point would otherwise land at the same x-value (a correct but
+# uninformative vertical cluster, flagged after the first N=256 Moore test).
+# log(tau) keeps advancing through Moore and, for the fat phase itself,
+# coincides with log(m_r/H) exactly (gamma = tau_switch is the same c0=1
+# identity noted in BoxPlan.hpp/docs/STATUS.md), so the fat portion of this
+# plot is unchanged -- only the Moore portion becomes readable.
 # ---------------------------------------------------------------------------
+if bg.has_switch:
+    xi_x, xi_xlabel, xi_x_desc = np.log(tau), r"$\log(\tau)$", "log(tau)"
+else:
+    xi_x, xi_xlabel, xi_x_desc = log_mr_over_h, r"$\log(m_r/H)$", "log(m_r/H)"
+
 fig, ax = plt.subplots(figsize=(7, 5))
-ax.plot(log_mr_over_h, net["xi"], "o-", color="#2b6cb0", markersize=4, linewidth=1.5)
+ax.plot(xi_x, net["xi"], "o-", color="#2b6cb0", markersize=4, linewidth=1.5)
 ax.axhline(1.0, color="gray", linestyle="--", linewidth=1, alpha=0.6, label=r"$\xi=1$ (attractor)")
-ax.set_xlabel(r"$\log(m_r/H)$")
+ax.set_xlabel(xi_xlabel)
 ax.set_ylabel(r"$\xi$")
-ax.set_title(f"String network density vs. log(m_r/H)\n{TITLE_TAG}, screened (scheme B)")
+ax.set_title(f"String network density vs. {xi_x_desc}\n{TITLE_TAG}, screened (scheme B)")
+if bg.has_switch:
+    ax.axvline(np.log(bg.tau_switch), color="darkred", linestyle=":", alpha=0.6,
+              label=f"fat->Moore switch (tau={bg.tau_switch:.3g})")
 ax.legend()
 ax.grid(True, alpha=0.3)
 fig.tight_layout()

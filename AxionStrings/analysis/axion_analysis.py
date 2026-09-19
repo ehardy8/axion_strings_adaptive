@@ -8,23 +8,35 @@ extraction F(k/H, m_r/H) of Fleury & Moore, 1806.04677 sec.4.2.1 eq.(33)
 be made many times over the course of this project, so let's have a nice
 setup").
 
-Only the no-switch background is implemented (matches every run so far);
-extend Background if a fat->Moore run needs analysing.
+A fat->Moore switch (2026-09-19, with the user) is supported via the
+optional c1/tau_switch fields, mirroring AxionStrings/Background.hpp's
+CTauSchedule exactly (re-anchored lambda(tau) at the switch) -- see
+detect_background() to build one of these automatically from a run's own
+network_scalars.dat rather than needing the switch parameters passed in by
+hand (easy to get wrong/stale relative to the actual run).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Background(tau) -- mirrors AxionStrings/Background.hpp exactly.
+# Background(tau) -- mirrors AxionStrings/Background.hpp exactly, including
+# CTauSchedule's re-anchored lambda(tau) across an optional single switch.
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Background:
     a_inv: float
     c0: float
+    c1: Optional[float] = None
+    tau_switch: Optional[float] = None
+
+    @property
+    def has_switch(self) -> bool:
+        return self.tau_switch is not None
 
     @property
     def b_inv(self) -> float:
@@ -43,7 +55,14 @@ class Background:
         )
 
     def lam(self, tau):
-        return 1.0 * (self.R(tau) / self.R0) ** (-2.0 * self.c0)
+        tau = np.asarray(tau, dtype=float)
+        pre_switch = 1.0 * (self.R(tau) / self.R0) ** (-2.0 * self.c0)
+        if not self.has_switch:
+            return pre_switch
+        R_s = self.R(self.tau_switch)
+        lambda_s = 1.0 * (R_s / self.R0) ** (-2.0 * self.c0)
+        post_switch = lambda_s * (self.R(tau) / R_s) ** (-2.0 * self.c1)
+        return np.where(tau < self.tau_switch, pre_switch, post_switch)
 
     def H(self, tau):
         return self.R_prime(tau) / self.R(tau) ** 2
@@ -54,6 +73,12 @@ class Background:
     def log_mr_over_h(self, tau):
         return np.log(self.m_r(tau) / self.H(tau))
 
+    def tau_from_log_mr_over_h(self, log_mr_over_h):
+        """Inverse of the no-switch H_over_mr closed form -- only valid
+        for resolving a time *before* c_sched.c0 stops applying (mirrors
+        Background::tau_from_log_mr_over_h's own caveat)."""
+        return np.exp(log_mr_over_h * (self.a_inv - 1.0) / (self.a_inv - self.c0))
+
     def t_cosmic(self, tau):
         """Cosmic time t = integral of R(tau') dtau', in closed form for
         this power-law R(tau) = R0 (tau/tau0)^(1/b_inv):
@@ -62,10 +87,42 @@ class Background:
         and irrelevant for any use of this function, since only time
         *differences* are ever physically meaningful (e.g. the eq.(33)
         finite difference below) -- verified against direct numerical
-        quadrature of R(tau) in test_axion_analysis.py.
+        quadrature of R(tau) in test_axion_analysis.py. Not switch-aware
+        (matches every use so far -- the eq.33 finite difference is always
+        taken within a single phase); extend if that ever changes.
         """
         tau = np.asarray(tau)
         return (tau ** (self.a_inv / self.b_inv) - 1.0) / self.a_inv
+
+
+def detect_background(network_scalars, a_inv, c0):
+    """Build a Background from a1_inv/c0 plus, if network_scalars shows a
+    plateau in m_r_over_H (the unmistakable signature of a fat->Moore
+    switch -- m_r/H is frozen by construction from the switch onward),
+    the c1=a_inv/tau_switch that reproduces it -- rather than needing the
+    switch parameters passed in by hand and kept in sync with the actual
+    run. tau_switch is solved exactly from the plateau's own value (not
+    just estimated): the plateaued m_r_over_H is exactly what the *no*
+    switch formula would have given at the true tau_switch, so inverting
+    that formula (tau_from_log_mr_over_h) recovers it exactly, for any
+    c0 -- not just the c0=1 fat case where tau_switch happens to equal
+    gamma.
+    """
+    tau = np.asarray(network_scalars["tau"])
+    m_r_over_h = np.asarray(network_scalars["m_r_over_H"])
+    if len(tau) < 2:
+        return Background(a_inv, c0)
+
+    diffs = np.abs(np.diff(m_r_over_h))
+    plateaued = diffs < 1.0e-9 * np.maximum(np.abs(m_r_over_h[:-1]), 1.0)
+    if not np.any(plateaued):
+        return Background(a_inv, c0)
+
+    i = int(np.argmax(plateaued))  # first index where m_r_over_H[i]==m_r_over_H[i+1]
+    gamma = float(m_r_over_h[i])
+    no_switch = Background(a_inv, c0)
+    tau_switch = float(no_switch.tau_from_log_mr_over_h(np.log(gamma)))
+    return Background(a_inv, c0, c1=a_inv, tau_switch=tau_switch)
 
 
 def L_tilde_general(N: int, a_inv: float, c0: float) -> float:

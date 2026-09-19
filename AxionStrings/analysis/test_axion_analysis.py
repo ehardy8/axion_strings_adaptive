@@ -6,8 +6,9 @@ import numpy as np
 from scipy import integrate
 
 from axion_analysis import (
-    Background, L_tilde_general, comoving_g, instantaneous_emission,
-    k_over_H, nearest_snapshot_for_delta_log, v3_drho_dk,
+    Background, L_tilde_general, comoving_g, detect_background,
+    instantaneous_emission, k_over_H, nearest_snapshot_for_delta_log,
+    v3_drho_dk,
 )
 
 
@@ -42,6 +43,69 @@ def test_k_over_h_scales_correctly():
     assert np.allclose(x2, x / 2.0)
     assert np.allclose(x / p, x[0] / p[0])  # exactly linear in p
     print("PASS: k_over_H scales as expected with p and R")
+
+
+def test_background_lam_continuous_and_frozen_across_a_switch():
+    """lam(tau)'s re-anchored switch branch (mirrors Background.hpp's
+    CTauSchedule) must be continuous at tau_switch, and log_mr_over_h must
+    freeze at gamma from the switch onward -- checked against independent
+    hand computation, not just internal self-consistency."""
+    a_inv, c0, tau_switch = 2.0, 1.0, 20.0
+    bg = Background(a_inv, c0, c1=a_inv, tau_switch=tau_switch)
+
+    eps = 1.0e-6
+    lam_before = bg.lam(tau_switch - eps)
+    lam_after = bg.lam(tau_switch + eps)
+    assert abs(lam_before - lam_after) / lam_before < 1.0e-4, (lam_before, lam_after)
+
+    gamma = tau_switch  # exact identity for c0=1 (fat), derived by hand
+    for tau in [tau_switch, tau_switch * 1.5, tau_switch * 3.0]:
+        got = bg.log_mr_over_h(tau)
+        assert abs(got - np.log(gamma)) < 1.0e-8, (tau, got, np.log(gamma))
+
+    # Before the switch, log_mr_over_h must match the plain no-switch
+    # background exactly (independent construction, not the same object).
+    bg_no_switch = Background(a_inv, c0)
+    for tau in [1.0, 5.0, tau_switch - 0.001]:
+        got, expected = bg.log_mr_over_h(tau), bg_no_switch.log_mr_over_h(tau)
+        assert abs(got - expected) < 1.0e-9 * max(abs(expected), 1.0), (tau, got, expected)
+    print("PASS: Background.lam is continuous at the switch and frozen after it")
+
+
+def test_detect_background_recovers_a_known_switch():
+    """Synthesise network_scalars-like (tau, m_r_over_H) rows for a real
+    fat->Moore run (growing then frozen at gamma), and check
+    detect_background recovers the exact tau_switch used to build it --
+    an independent construction (built from the *true* switch-aware
+    Background), not a restatement of detect_background's own logic."""
+    a_inv, c0 = 2.0, 1.0
+    true_tau_switch = 37.5
+    bg_true = Background(a_inv, c0, c1=a_inv, tau_switch=true_tau_switch)
+
+    tau = np.concatenate([np.linspace(5.0, true_tau_switch, 10),
+                          np.linspace(true_tau_switch + 2.0, 80.0, 10)])
+    m_r_over_h = bg_true.m_r(tau) / bg_true.H(tau)
+
+    network_scalars = {"tau": tau, "m_r_over_H": m_r_over_h}
+    bg_detected = detect_background(network_scalars, a_inv, c0)
+
+    assert bg_detected.has_switch
+    assert abs(bg_detected.tau_switch - true_tau_switch) / true_tau_switch < 1.0e-6
+    print(
+        f"PASS: detect_background recovers tau_switch={bg_detected.tau_switch:.4f} "
+        f"(true={true_tau_switch})"
+    )
+
+
+def test_detect_background_no_switch_when_no_plateau():
+    a_inv, c0 = 2.0, 0.0
+    bg_true = Background(a_inv, c0)
+    tau = np.linspace(2.0, 50.0, 15)
+    m_r_over_h = bg_true.m_r(tau) / bg_true.H(tau)
+    network_scalars = {"tau": tau, "m_r_over_H": m_r_over_h}
+    bg_detected = detect_background(network_scalars, a_inv, c0)
+    assert not bg_detected.has_switch
+    print("PASS: detect_background finds no switch when there is none")
 
 
 def test_nearest_snapshot_for_delta_log():
@@ -146,6 +210,9 @@ if __name__ == "__main__":
     test_t_cosmic_matches_quadrature()
     test_v3_drho_dk_and_comoving_g_consistency()
     test_k_over_h_scales_correctly()
+    test_background_lam_continuous_and_frozen_across_a_switch()
+    test_detect_background_recovers_a_known_switch()
+    test_detect_background_no_switch_when_no_plateau()
     test_nearest_snapshot_for_delta_log()
     test_instantaneous_emission_recovers_known_F()
     print("\nAll tests passed.")

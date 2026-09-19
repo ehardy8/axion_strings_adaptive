@@ -1,0 +1,41 @@
+# Smoke test for AMR box-planning wiring (2026-09-19, milestone 2 Phase 0
+# wiring): confirms compute_amr_box_plan correctly derives amr.n_cell/
+# geometry.prob_extent/derived_tau_f/the level-addition schedule, and that
+# GRTeclyn's own AMR machinery (regrid, FillPatch, quartic interpolation)
+# runs without crashing at max_level>0 for the first time in this project
+# -- using the *existing placeholder* tag_cells() (geometric, not yet the
+# real string-based tagger, which is milestone-2 Phase 1). Not a physics
+# validation run.
+#
+# By hand: N=64 (effective/finest), N1=N2=1, a_inv=2, c=0 (physical):
+#   tau_f=8, L_tilde=8, dx_finest=0.125, N_base=16, dx_base=0.5
+#   Delta log per level = ln(4) = 1.386
+#   log_add: level 1 at log=1.386, level 2 at log=2.773
+# log_mr_over_h_i=1.0 is comfortably below level 1's own threshold, so the
+# run starts on the base grid alone (though the placeholder tagger doesn't
+# actually consult this schedule yet -- that's Phase 1).
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+amr.max_level = 2
+amr.max_grid_size   = 16
+amr.blocking_factor = 8
+amr.n_error_buf     = 1
+amr.regrid_int      = 2
+
+geometry.is_periodic = 1 1 1
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = 20
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 0.0 # physical
+
+axion_strings.log_mr_over_h_i = 1.0
+axion_strings.output_first_log_mr_over_h = 1.0
+axion_strings.output_delta_log_mr_over_h = 0.5
+
+axion_strings.N  = 64
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0

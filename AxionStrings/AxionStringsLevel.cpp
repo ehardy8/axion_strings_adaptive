@@ -2,7 +2,6 @@
 #include "AxionStringsParams.hpp"
 #include "AxionStringsRHS.hpp"
 #include "EnergyKernel.hpp"
-#include "FixedGridsTagger.hpp"
 #include "FourierIC.hpp"
 #include "MaskedFieldBuffer.hpp"
 #include "ProjectionKernel.hpp"
@@ -11,6 +10,7 @@
 #include "StateTypes.hpp"
 #include "StateVariables.hpp"
 #include "StringFinder.hpp"
+#include "StringTagger.hpp"
 #include "VelocityKernel.hpp"
 #include "XiFormula.hpp"
 
@@ -32,12 +32,20 @@ void AxionStringsLevel::variableSetUp()
         amrex::ParmParse("axion_strings").query("derived_tau_f", tau_f);
     s_tau_f = tau_f;
 
+    // Read back the AMR level-addition schedule (absent for max_level=0
+    // and Moore mode -- see AxionStringsLevel.hpp's own comment).
+    s_has_level_schedule =
+        amrex::ParmParse("axion_strings")
+            .queryarr("derived_level_add_log_mr_over_h",
+                     s_level_add_log_mr_over_h) != 0;
+
     // Every run needs these now, not just ones that skip relaxation --
     // there is no longer a separate, non-diagnostic relaxation-only mode.
     s_energy_masking =
         AxionStringsParams::read_masking_params("axion_strings.masking");
     s_output_cadence = AxionStringsParams::read_output_cadence();
     s_next_output_log_mr_over_h = s_output_cadence.first_log_mr_over_h;
+    s_tagging_params = AxionStringsParams::read_tagging_params();
 
     std::string ic_mode = "homogeneous";
     amrex::ParmParse("axion_strings").queryAdd("ic_mode", ic_mode);
@@ -924,20 +932,68 @@ void AxionStringsLevel::specific_post_timestep()
 void AxionStringsLevel::tag_cells(amrex::TagBoxArray &tags,
                                  amrex::Real a_regrid_threshold)
 {
-    // Placeholder tagger: no refinement in milestone 1 (amr.max_level = 0
-    // throughout), replaced by the string-based tagger in a later milestone.
+    // Real (string-based) tagger, milestone-2 Phase 1 (StringTagger.hpp):
+    // replaces the geometric FixedGridsTagger placeholder used throughout
+    // milestone 1.
     BL_PROFILE("AxionStringsLevel::tag_cells()");
 
-    const auto &tag_arrs = tags.arrays();
+    // No refinement during relaxation (2026-09-19, with the user): a_time
+    // there is pre-evolution's own local clock (tau_pre), not tau = s_tau_i
+    // + a_time -- computing log(m_r/H) from it via s_background would be
+    // meaningless (wrong background entirely). Relaxation is an artificial
+    // process anyway, not real cosmological evolution, so "no refinement
+    // needed yet" is also the physically sensible answer here, matching
+    // the schedule-gating below's own spirit for the very start of a run.
+    if (s_phase == Phase::Relaxing)
+    {
+        return;
+    }
 
-    const amrex::Real dx    = Geom().CellSize(0);
+    // Schedule-gating: only allow tagging to create the next level once
+    // log(m_r/H) has actually reached its threshold (BoxPlan.hpp::
+    // compute_amr_box_plan) -- otherwise the current level's own
+    // resolution is, by construction, still adequate, and tagging anyway
+    // would refine long before it's needed. The current level's own index
+    // (0-based) is exactly the index into the schedule for the *next*
+    // level's threshold (s_level_add_log_mr_over_h[ell-1] is level ell's
+    // threshold). Absent for max_level=0 and Moore mode (guarded together
+    // at parameter-read time), in which case tagging is never gated here.
     const int current_level = Level();
+    if (s_has_level_schedule)
+    {
+        if (current_level >=
+            static_cast<int>(s_level_add_log_mr_over_h.size()))
+        {
+            return; // already at the finest permitted level
+        }
+        const amrex::Real a_time = get_state_data(state_index).curTime();
+        const double tau         = s_tau_i + static_cast<double>(a_time);
+        const double log_mr_over_h =
+            -std::log(static_cast<double>(s_background.H_over_mr_direct(tau)));
+        if (log_mr_over_h <
+            s_level_add_log_mr_over_h[static_cast<std::size_t>(current_level)])
+        {
+            return; // this level's own resolution is still adequate
+        }
+    }
 
-    FixedGridsTagger my_tagging_criterion{dx, current_level};
+    // FillBoundary: the plaquette test reads (i+1,j+1,k+1) neighbours, and
+    // the optional gradient criterion's Laplacian needs
+    // FourthOrderDerivatives' usual 2-cell-wide stencil -- both covered by
+    // the state's default ghost count (>=3), same precondition as every
+    // other per-cell diagnostic pass in this file.
+    amrex::MultiFab &state_new = get_new_data(state_index);
+    state_new.FillBoundary(Geom().periodicity());
 
-    amrex::ParallelFor(tags,
-                       [=] AMREX_GPU_DEVICE(int box_no, int ix, int iy, int iz)
-                       { my_tagging_criterion(ix, iy, iz, tag_arrs[box_no]); });
+    const auto &tag_arrs   = tags.arrays();
+    const auto &state_arrs = state_new.const_arrays();
+    const amrex::Real dx   = Geom().CellSize(0);
+
+    StringTagger tagger{dx, s_tagging_params};
+
+    amrex::ParallelFor(
+        tags, [=] AMREX_GPU_DEVICE(int box_no, int ix, int iy, int iz)
+        { tagger(ix, iy, iz, state_arrs[box_no], tag_arrs[box_no]); });
     amrex::Gpu::streamSynchronize();
 }
 

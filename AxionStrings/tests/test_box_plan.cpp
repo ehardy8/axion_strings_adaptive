@@ -95,6 +95,76 @@ TEST_CASE("Moore dynamic range formula matches its algebraic inverse")
           doctest::Approx(D).epsilon(1.0e-3));
 }
 
+TEST_CASE("AMR box plan: N_base/dx_base consistency and divisibility check")
+{
+    const int N_effective = 4096;
+    const int max_level   = 4;
+    const double N1 = 1.2, N2 = 8.0, a_inv = 2.0, c = 0.0; // physical
+
+    const auto plan = compute_amr_box_plan(N_effective, N1, N2, a_inv, c, max_level);
+    CHECK(plan.N_base == N_effective / (1 << max_level));
+    CHECK(plan.dx_base == doctest::Approx(plan.dx_finest * (1 << max_level)));
+    CHECK(static_cast<int>(plan.log_add.size()) == max_level);
+
+    // Not evenly divisible -> N_base is the -1 sentinel, not a silently
+    // wrong integer (e.g. from C++ truncating division).
+    const auto bad_plan = compute_amr_box_plan(4097, N1, N2, a_inv, c, max_level);
+    CHECK(bad_plan.N_base == -1);
+}
+
+TEST_CASE("AMR box plan: level thresholds are spaced by the derived "
+          "Delta log(m_r/H), matching conventions.md sec.11's ln(4) at a_inv=2")
+{
+    const int N_effective = 4096;
+    const int max_level   = 5;
+    const double N1 = 1.0, N2 = 4.0, a_inv = 2.0, c = 0.0;
+
+    const auto plan = compute_amr_box_plan(N_effective, N1, N2, a_inv, c, max_level);
+    const double expected_delta = std::log(4.0); // a_inv=2, c=0 special case
+    for (std::size_t i = 1; i < plan.log_add.size(); ++i)
+    {
+        CHECK(plan.log_add[i] - plan.log_add[i - 1] ==
+             doctest::Approx(expected_delta).epsilon(1.0e-9));
+    }
+
+    // The finest level's own threshold sits exactly one level-spacing
+    // before tau_f's own log(m_r/H) (tau_f is where *all* max_level levels
+    // are needed, by compute_general_box_plan's construction).
+    CTauSchedule sched{};
+    sched.c0 = c;
+    Background bkg(a_inv, sched);
+    const double log_mr_over_h_tau_f = -std::log(bkg.H_over_mr_closed_form(plan.tau_f));
+    CHECK(plan.log_add.back() ==
+          doctest::Approx(log_mr_over_h_tau_f - expected_delta).epsilon(1.0e-9));
+}
+
+TEST_CASE("AMR box plan: level 1's threshold is exactly where the base "
+          "grid alone first reaches the N2 target")
+{
+    // The physically meaningful boundary condition the whole schedule is
+    // built from: at tau = tau_from_log_mr_over_h(log_add[0]), the *base*
+    // grid (dx_base, no refinement at all) should give exactly N2 -- i.e.
+    // level 1 is not needed a moment before this, and is needed from here
+    // on. Checked directly against Background, not against
+    // compute_amr_box_plan's own formula (which would be circular).
+    const int N_effective = 8192;
+    const int max_level   = 3;
+    const double N1 = 1.0, N2 = 6.0, a_inv = 2.5, c = 0.0;
+
+    const auto plan = compute_amr_box_plan(N_effective, N1, N2, a_inv, c, max_level);
+
+    CTauSchedule sched{};
+    sched.c0 = c;
+    Background bkg(a_inv, sched);
+    const double tau_1 = bkg.tau_from_log_mr_over_h(plan.log_add[0]);
+
+    const double R_1   = bkg.R(tau_1);
+    const double m_r_1 = std::sqrt(bkg.lambda(tau_1));
+    const double N2_base_only = 1.0 / (R_1 * plan.dx_base * m_r_1);
+
+    CHECK(N2_base_only == doctest::Approx(N2).epsilon(1.0e-6));
+}
+
 TEST_CASE("Moore box plan reproduces N2 at the switch and the achievable "
           "dynamic range at tau_end")
 {

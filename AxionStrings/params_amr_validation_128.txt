@@ -1,0 +1,46 @@
+# Milestone-2 Phase 1 validation run (2026-09-19, with the user): physical
+# strings (c0=0), N_base=128 coarse grid, 2 refinement levels. Checks the
+# schedule-gated tagger's central claim directly: "at the start of
+# simulations no refinement is needed, but we should successively start
+# refining more as log(m_r/H) increases."
+#
+# Box plan by hand (N=512 effective = 128*2^2, N1=N2=1, a_inv=2, c=0):
+#   tau_f=22.627, L_tilde=22.627, dx_finest=0.04419, N_base=128,
+#   dx_base=0.17678
+#   level-addition schedule: level 1 at log(m_r/H)=3.466, level 2 at 4.852
+# log_mr_over_h_i=2.0 is comfortably below both -- level 0 should run
+# alone (0% refined) until log(m_r/H) crosses 3.466, then level 1 only
+# until it crosses 4.852, then level 2 too, all the way to tau_f (log=6.238).
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+amr.max_level = 2
+amr.max_grid_size   = 16
+amr.blocking_factor = 16
+amr.n_error_buf     = 2
+amr.regrid_int      = 2
+
+geometry.is_periodic = 1 1 1
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = -1
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 0.0 # physical
+
+axion_strings.log_mr_over_h_i = 2.0
+
+axion_strings.N  = 512
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+axion_strings.ic_mode = fourier_relaxed
+axion_strings.pre_evolution.gamma = 5.65685
+axion_strings.pre_evolution.xi_target = 1.0
+axion_strings.pre_evolution.k_max_over_mr        = 64
+axion_strings.pre_evolution.mean_square_variance = 0.5
+axion_strings.pre_evolution.seed = 42
+
+axion_strings.output_first_log_mr_over_h = 2.0
+axion_strings.output_delta_log_mr_over_h = 0.2

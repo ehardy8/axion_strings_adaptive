@@ -29,6 +29,43 @@ struct PlaquetteCounts
     long n_p_weighted{0};
 };
 
+struct PlaquetteWindings
+{
+    int w_xy{0};
+    int w_yz{0};
+    int w_zx{0};
+};
+
+// The 3 low-index-corner plaquettes at (i,j,k) (conventions.md sec.8/11's
+// tagging convention). Shared by count_plaquettes (the xi diagnostic,
+// below) and StringTagger.hpp (the tagging criterion) -- CLAUDE.md
+// constraint 5's spirit: one place this test is defined, not inlined at
+// two call sites where they could silently drift apart.
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE PlaquetteWindings
+plaquette_windings_at(const amrex::Array4<amrex::Real const> &a, int i, int j,
+                      int k)
+{
+    auto phase = [&](int ii, int jj, int kk) -> double
+    {
+        return std::atan2(static_cast<double>(a(ii, jj, kk, c_psi2)),
+                          static_cast<double>(a(ii, jj, kk, c_psi1)));
+    };
+
+    const double th_000 = phase(i, j, k);
+    const double th_100 = phase(i + 1, j, k);
+    const double th_110 = phase(i + 1, j + 1, k);
+    const double th_010 = phase(i, j + 1, k);
+    const double th_001 = phase(i, j, k + 1);
+    const double th_101 = phase(i + 1, j, k + 1);
+    const double th_011 = phase(i, j + 1, k + 1);
+
+    PlaquetteWindings w{};
+    w.w_xy = plaquette_winding(th_000, th_100, th_110, th_010);
+    w.w_yz = plaquette_winding(th_000, th_010, th_011, th_001);
+    w.w_zx = plaquette_winding(th_000, th_001, th_101, th_100);
+    return w;
+}
+
 [[nodiscard]] inline PlaquetteCounts
 count_plaquettes(const amrex::MultiFab &state)
 {
@@ -42,33 +79,12 @@ count_plaquettes(const amrex::MultiFab &state)
         state, amrex::IntVect(0), reduce_data,
         [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) -> ReduceTuple
         {
-            const auto &a = arrs[box_no];
+            const auto w = plaquette_windings_at(arrs[box_no], i, j, k);
 
-            auto phase = [&](int ii, int jj, int kk) -> double
-            {
-                return std::atan2(static_cast<double>(a(ii, jj, kk, c_psi2)),
-                                  static_cast<double>(a(ii, jj, kk, c_psi1)));
-            };
-
-            const double th_000 = phase(i, j, k);
-            const double th_100 = phase(i + 1, j, k);
-            const double th_110 = phase(i + 1, j + 1, k);
-            const double th_010 = phase(i, j + 1, k);
-            const double th_001 = phase(i, j, k + 1);
-            const double th_101 = phase(i + 1, j, k + 1);
-            const double th_011 = phase(i, j + 1, k + 1);
-
-            const int w_xy =
-                plaquette_winding(th_000, th_100, th_110, th_010);
-            const int w_yz =
-                plaquette_winding(th_000, th_010, th_011, th_001);
-            const int w_zx =
-                plaquette_winding(th_000, th_001, th_101, th_100);
-
-            const long plain = (w_xy != 0 ? 1 : 0) + (w_yz != 0 ? 1 : 0) +
-                              (w_zx != 0 ? 1 : 0);
+            const long plain = (w.w_xy != 0 ? 1 : 0) + (w.w_yz != 0 ? 1 : 0) +
+                              (w.w_zx != 0 ? 1 : 0);
             const long weighted =
-                std::abs(w_xy) + std::abs(w_yz) + std::abs(w_zx);
+                std::abs(w.w_xy) + std::abs(w.w_yz) + std::abs(w.w_zx);
 
             return {plain, weighted};
         });

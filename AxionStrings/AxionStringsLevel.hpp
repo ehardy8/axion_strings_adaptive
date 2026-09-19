@@ -7,6 +7,7 @@
 #include "GRAmrLevel.hpp"
 #include "Masking.hpp"
 #include "PreEvolutionBackground.hpp"
+#include "StringTagger.hpp"
 
 class AxionStringsLevel : public GRAmrLevel
 {
@@ -75,6 +76,18 @@ class AxionStringsLevel : public GRAmrLevel
     inline static double s_tau_f{0.0};
     inline static bool s_has_tau_f{false};
 
+    // AMR level-addition schedule (BoxPlan.hpp::compute_amr_box_plan's
+    // axion_strings.derived_level_add_log_mr_over_h, read back here) --
+    // absent for max_level=0 and for Moore mode (guarded against combining
+    // with AMR at parameter-read time already). s_level_add_log_mr_over_h
+    // [ell-1] is the log(m_r/H) threshold for creating level ell from
+    // level ell-1; used by tag_cells() to gate tagging, not just derived
+    // and forgotten (2026-09-19, with the user: "we only need to start
+    // refining when the resolution on the previously best grid drops
+    // below the target -- at the start, no refinement is needed").
+    inline static std::vector<double> s_level_add_log_mr_over_h{};
+    inline static bool s_has_level_schedule{false};
+
     // Relaxation phase only (conventions.md sec.7).
     inline static PreEvolutionBackground s_pre_background{};
     inline static double s_xi_target{0.0};
@@ -92,6 +105,11 @@ class AxionStringsLevel : public GRAmrLevel
     // Screening used for the energy diagnostics (task 1.8) -- a runtime
     // parameter, never a compile-time constant (CLAUDE.md constraint 4).
     inline static MaskingParams s_energy_masking{};
+
+    // Real (string-based) tagging criterion, milestone-2 Phase 1
+    // (StringTagger.hpp) -- read once in variableSetUp(), used in
+    // tag_cells() every regrid.
+    inline static StringTaggerParams s_tagging_params{};
 
     // Output cadence (2026-09-18, with the user): the full per-snapshot
     // diagnostics only run once log(m_r/H) has advanced past

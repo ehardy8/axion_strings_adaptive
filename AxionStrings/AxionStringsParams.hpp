@@ -14,10 +14,12 @@
 #include "GRParmParse.hpp"
 #include "Masking.hpp"
 #include "PreEvolutionBackground.hpp"
+#include "StringTagger.hpp"
 
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -250,6 +252,26 @@ inline OutputCadence read_output_cadence()
     return cadence;
 }
 
+// Real (string-based) tagging criterion, milestone-2 Phase 1
+// (StringTagger.hpp/StringTaggerParams, conventions.md sec.11). The
+// primary (plaquette-based) criterion has no parameters of its own; the
+// secondary gradient criterion (Buschmann et al.: dx_ell^2|laplacian(
+// psi_i)| > threshold, their value 0.04) is optional -- defaults to
+// effectively off (a threshold no field configuration can cross), since
+// conventions.md sec.11 says to assess this criterion rather than copy
+// it. queryAdd, not get: this is meant to be left unset for most runs.
+inline StringTaggerParams read_tagging_params()
+{
+    GRParmParse pp("axion_strings.tagging");
+    StringTaggerParams params{};
+    pp.queryAdd("gradient_threshold", params.gradient_threshold);
+    if (params.gradient_threshold <= 0.0)
+    {
+        pp.error("gradient_threshold", "must be > 0");
+    }
+    return params;
+}
+
 // Masking (conventions.md sec.10, milestone-1.md task 1.7). The threshold
 // is a runtime parameter, never a compile-time constant (CLAUDE.md
 // constraint 4) -- it will be scanned; conventions.md sec.10/sec.14 record
@@ -353,39 +375,27 @@ inline void apply_box_plan(const Background &background, double tau_i)
     GRParmParse amr_pp("amr");
     int max_level = 0;
     amr_pp.queryAdd("max_level", max_level);
-    if (max_level == 0)
+
+    // Moore should run single-level (conventions.md sec.11: "AMR pays peak
+    // cost for no asymptotic saving" there -- Moore's comoving core width
+    // grows, so refinement demand is maximal at the start and only falls;
+    // there is no phase where AMR is cheaper than just running at the
+    // resolution Moore needs throughout). Checked before either Moore
+    // branch below, both of which assume amr.n_cell/geometry.prob_extent
+    // are single-level quantities.
+    if (moore_mode && max_level > 0)
     {
-        if (amr_pp.contains("n_cell"))
-        {
-            std::array<int, AMREX_SPACEDIM> n_cell{};
-            amr_pp.get("n_cell", n_cell);
-            for (int n : n_cell)
-            {
-                if (n != N)
-                {
-                    amr_pp.error(
-                        "n_cell",
-                        "does not match axion_strings.N -- either remove "
-                        "amr.n_cell to let it be derived, or fix "
-                        "axion_strings.N to match");
-                }
-            }
-        }
-        else
-        {
-            amr_pp.addarr("n_cell", std::vector<int>{N, N, N});
-            amrex::Print() << "  -> amr.n_cell set to " << N << " " << N
-                           << " " << N << "\n";
-        }
+        pp.error("N", "amr.max_level > 0 is not supported reaching Moore "
+                      "(conventions.md sec.11: Moore should run "
+                      "single-level) -- set amr.max_level = 0 for a "
+                      "fat->Moore run");
     }
-    else
-    {
-        amrex::Print()
-            << "  amr.max_level = " << max_level
-            << " > 0: axion_strings.N is the effective finest resolution "
-               "(conventions.md sec.5/sec.11), not amr.n_cell -- set "
-               "amr.n_cell by hand.\n";
-    }
+
+    // amr.n_cell derivation is deferred past this point: which grid size it
+    // derives from (N directly for a single-level run, or N's role as the
+    // *effective finest* resolution for AMR -- conventions.md sec.5/sec.11)
+    // depends on max_level, resolved together with the rest of box planning
+    // below rather than duplicated here.
 
     if (moore_mode && !background.c_sched.has_switch)
     {
@@ -503,8 +513,145 @@ inline void apply_box_plan(const Background &background, double tau_i)
         return;
     }
 
-    const double c   = background.c_sched.c0;
-    const auto plan  = compute_general_box_plan(N, N1, N2, a_inv, c);
+    const double c = background.c_sched.c0;
+
+    if (max_level > 0)
+    {
+        // AMR box plan (2026-09-19, milestone 2 "Phase 0"/wiring):
+        // BoxPlan.hpp's compute_amr_box_plan. N is the *effective finest*
+        // resolution (conventions.md sec.5/sec.11 -- not amr.n_cell, which
+        // is the coarser base-level grid derived from it here), N1/N2 the
+        // same Hubble-patch/core-resolution targets as ever, now understood
+        // to be achieved at tau_f using the finest level.
+        const auto plan =
+            compute_amr_box_plan(N, N1, N2, a_inv, c, max_level);
+
+        amrex::Print()
+            << "  AMR: N (effective, finest) = " << N << ", amr.max_level = "
+            << max_level << "\n"
+            << "  tau_f = " << plan.tau_f << " (from tau_i = " << tau_i
+            << ")\n"
+            << "  L_tilde = " << plan.L_tilde
+            << ", dx_finest = " << plan.dx_finest
+            << ", dx_base (level 0) = " << plan.dx_base << "\n";
+
+        if (plan.N_base <= 0)
+        {
+            pp.error("N", "N is not evenly divisible by 2^amr.max_level -- "
+                          "choose an effective resolution N that is a clean "
+                          "multiple of 2^max_level");
+        }
+        if (plan.tau_f <= tau_i)
+        {
+            pp.error("N", "the requested N, N1, N2, c configuration gives "
+                          "tau_f <= tau_i; cannot evolve forward from tau_i");
+        }
+
+        amrex::Print() << "  Level-addition schedule (log(m_r/H) at which "
+                          "each level must be active):\n";
+        for (int ell = 1; ell <= max_level; ++ell)
+        {
+            amrex::Print()
+                << "    level " << ell << ": log(m_r/H) = "
+                << plan.log_add[static_cast<std::size_t>(ell - 1)] << "\n";
+        }
+
+        if (amr_pp.contains("n_cell"))
+        {
+            std::array<int, AMREX_SPACEDIM> n_cell{};
+            amr_pp.get("n_cell", n_cell);
+            for (int n : n_cell)
+            {
+                if (n != plan.N_base)
+                {
+                    amr_pp.error(
+                        "n_cell",
+                        "does not match the box-planning-derived base-level "
+                        "grid size (N/2^max_level) -- either remove "
+                        "amr.n_cell to let it be derived, or fix "
+                        "axion_strings.N/N2/amr.max_level to match");
+                }
+            }
+        }
+        else
+        {
+            amr_pp.addarr(
+                "n_cell",
+                std::vector<int>{plan.N_base, plan.N_base, plan.N_base});
+            amrex::Print() << "  -> amr.n_cell set to " << plan.N_base << " "
+                           << plan.N_base << " " << plan.N_base << "\n";
+        }
+
+        GRParmParse geom_pp("geometry");
+        if (geom_pp.contains("prob_extent"))
+        {
+            std::array<double, AMREX_SPACEDIM> prob_extent{};
+            geom_pp.get("prob_extent", prob_extent);
+            for (double L : prob_extent)
+            {
+                if (std::abs(L - plan.L_tilde) > 1.0e-6 * plan.L_tilde)
+                {
+                    geom_pp.error(
+                        "prob_extent",
+                        "does not match the box-planning-derived L_tilde -- "
+                        "either remove geometry.prob_extent to let it be "
+                        "derived, or fix axion_strings.N/N1/N2 to match");
+                }
+            }
+        }
+        else
+        {
+            geom_pp.addarr(
+                "prob_extent",
+                std::vector<double>{plan.L_tilde, plan.L_tilde, plan.L_tilde});
+            amrex::Print() << "  -> geometry.prob_extent set to "
+                           << plan.L_tilde << " " << plan.L_tilde << " "
+                           << plan.L_tilde << "\n";
+        }
+
+        pp.add("derived_tau_f", plan.tau_f);
+        // Consumed by the tagger (milestone-2 Phase 1, not yet
+        // implemented): which level must be active at the current tau.
+        pp.addarr("derived_level_add_log_mr_over_h", plan.log_add);
+
+        GRParmParse evolution_pp("evolution");
+        if (!evolution_pp.contains("stop_time"))
+        {
+            evolution_pp.add("stop_time", -1.0);
+            amrex::Print()
+                << "  -> evolution.stop_time set to -1 (unlimited): "
+                   "AxionStringsLevel::okToContinue() is the authoritative "
+                   "stop condition now, comparing the live tau against "
+                   "axion_strings.derived_tau_f = "
+                << plan.tau_f << "\n";
+        }
+        return;
+    }
+
+    if (amr_pp.contains("n_cell"))
+    {
+        std::array<int, AMREX_SPACEDIM> n_cell{};
+        amr_pp.get("n_cell", n_cell);
+        for (int n : n_cell)
+        {
+            if (n != N)
+            {
+                amr_pp.error(
+                    "n_cell",
+                    "does not match axion_strings.N -- either remove "
+                    "amr.n_cell to let it be derived, or fix "
+                    "axion_strings.N to match");
+            }
+        }
+    }
+    else
+    {
+        amr_pp.addarr("n_cell", std::vector<int>{N, N, N});
+        amrex::Print() << "  -> amr.n_cell set to " << N << " " << N << " "
+                       << N << "\n";
+    }
+
+    const auto plan = compute_general_box_plan(N, N1, N2, a_inv, c);
 
     amrex::Print()
         << "  tau_f = " << plan.tau_f << " (from tau_i = " << tau_i << ")\n"

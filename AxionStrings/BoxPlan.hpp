@@ -11,6 +11,7 @@
 // v = 1, lambda0 = 1, tau0 = 1 throughout (conventions.md sec.5 code units).
 
 #include <cmath>
+#include <vector>
 
 // General (non-Moore) box plan:
 //   tau_f    = (N/(N1 N2))^((a_inv-1)/(a_inv-c)) tau0
@@ -45,6 +46,81 @@ compute_general_box_plan(int N, double N1, double N2, double a_inv, double c)
     plan.L_tilde                   = (N1 / R0) * power;
     plan.delta_x                   = plan.L_tilde / N;
     plan.delta_tau_leapfrog_bound  = plan.delta_x / 3.0;
+    return plan;
+}
+
+// AMR box plan (2026-09-19, with the user, milestone-2 "Phase 0"):
+// conventions.md sec.5's own note -- "for AMR, N and N2 refer to the
+// effective finest resolution, not the base grid" -- means
+// compute_general_box_plan already gives the right L_tilde/tau_f/dx_finest
+// when called with N = N_effective (the box's finest-level cell count).
+// What's new here: deriving the *base* (level 0) grid size from
+// N_effective/2^max_level, and the level-addition schedule -- the
+// log(m_r/H) at which each level must come online so the finest active
+// level's resolution never falls below the N2 target.
+//
+// Derivation (physical mode, c -- see the singularity note below):
+// N2 at a fixed comoving spacing dx is N2(tau) = 1/(R(tau) dx m_r(tau));
+// R(tau) m_r(tau) = R0 (tau/tau0)^((1-c)/b_inv) (Background.hpp's R(tau)
+// and m_r(tau) = sqrt(lambda(tau)), lambda0=1), so at level 0's spacing
+// dx_0, N2_0(tau) is a pure power law in tau, hence in x = m_r/H via
+// x = tau^((a_inv-c)/b_inv). Level ell's spacing is dx_0/2^ell, and
+// N2 scales as 1/dx, so N2_ell(tau) = 2^ell N2_0(tau) *identically*
+// (a purely geometric statement, independent of c or m_r(tau)'s own time
+// dependence). Requiring level ell to just reach the target N2 at the
+// moment it is needed (2^(ell-1) N2_0 = N2, i.e. level ell-1's resolution
+// has *just* degraded to the target) and solving for the corresponding x
+// gives a power law in ell, whose consecutive spacing in log(x) works out
+// to (checked numerically against the closed form and against
+// conventions.md sec.11's ln(4) for a_inv=2, c=0 -- see
+// tests/test_box_plan.cpp):
+//   Delta log(m_r/H) per level = ln(2) * (a_inv - c) / (1 - c)
+// Singular at c=1 (fat) -- consistent with conventions.md sec.11's own
+// table entry that fat mode's comoving core width is exactly constant, so
+// no further level is ever needed past the initial setup; this function
+// is intended for physical mode (c=0), where the singularity is nowhere
+// near (denominator = 1). Counting backward from tau_f (where, by
+// compute_general_box_plan's own construction, N2 is reached using *all*
+// max_level levels) by one level-spacing per level gives log_add[ell]
+// (1-indexed: log_add[0] is level 1's own threshold).
+struct AmrBoxPlan
+{
+    double L_tilde{};
+    double dx_finest{};
+    double dx_base{};
+    int N_base{};   // -1 if N_effective is not evenly divisible by 2^max_level
+    double tau_f{}; // from compute_general_box_plan(N_effective, ...)
+    std::vector<double> log_add; // size max_level; log_add[ell-1] = level ell's threshold
+};
+
+[[nodiscard]] inline AmrBoxPlan
+compute_amr_box_plan(int N_effective, double N1, double N2, double a_inv,
+                     double c, int max_level)
+{
+    const GeneralBoxPlan general =
+        compute_general_box_plan(N_effective, N1, N2, a_inv, c);
+
+    AmrBoxPlan plan{};
+    plan.L_tilde   = general.L_tilde;
+    plan.dx_finest = general.delta_x;
+    plan.tau_f     = general.tau_f;
+
+    const int ratio = 1 << max_level;
+    plan.N_base = (N_effective % ratio == 0) ? (N_effective / ratio) : -1;
+    plan.dx_base = plan.dx_finest * static_cast<double>(ratio);
+
+    const double b_inv = a_inv - 1.0;
+    const double log_mr_over_h_at_tau_f =
+        (a_inv - c) / b_inv * std::log(general.tau_f);
+    const double delta_log_per_level = std::log(2.0) * (a_inv - c) / (1.0 - c);
+
+    plan.log_add.resize(static_cast<std::size_t>(max_level));
+    for (int ell = 1; ell <= max_level; ++ell)
+    {
+        plan.log_add[static_cast<std::size_t>(ell - 1)] =
+            log_mr_over_h_at_tau_f -
+            static_cast<double>(max_level - ell + 1) * delta_log_per_level;
+    }
     return plan;
 }
 

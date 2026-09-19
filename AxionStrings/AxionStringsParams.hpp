@@ -314,6 +314,150 @@ inline StringTaggerParams read_tagging_params()
     return params;
 }
 
+// Regrid-frequency/buffer safety margin (2026-09-19, with the user).
+// AMReX only re-tags cells every amr.regrid_int level-native steps, so
+// the amr.n_error_buf cell buffer grown around every tagged cell must be
+// wide enough that the fastest possible string segment (v=1, these
+// units) cannot cross out of the refined-plus-buffer region before the
+// next regrid check -- otherwise it can briefly sit unrefined right at a
+// coarse-fine boundary, exactly the systematic conventions.md sec.11's
+// "level-timing" section warns about. GRAmrLevel::ComputeDt sets
+// dt_level = evolution.dt_multiplier * dx_level exactly (checked
+// directly in GRTeclyn's source, not assumed), so a v=1 signal crosses
+// dt_multiplier cells every level-native step, hence dt_multiplier *
+// amr.regrid_int cells over one whole regrid interval -- independent of
+// level, since dt_level and dx_level scale together under subcycling.
+//
+// Rather than tuning amr.n_error_buf and amr.regrid_int independently by
+// hand against each other (as every params file did before this), two
+// axion_strings.tagging.* inputs express the same choice directly and
+// keep them consistent automatically. Deliberately *not* an empirical
+// optimum search over their trade-off right now (2026-09-19, with the
+// user: "we will ultimately run on a much bigger grid on a cluster so
+// the optimal might change dramatically" -- today's small-grid numbers
+// would not transfer anyway); this just makes the safety-preserving
+// relationship between them explicit and scannable later.
+//
+// axion_strings.tagging.regrid_interval_steps (int, no default -- this
+// whole mechanism is off unless set, so every existing hand-tuned params
+// file that already sets amr.n_error_buf/amr.regrid_int directly is
+// completely unaffected): how the fixed v=1 safety requirement is
+// *distributed* between regrid time and buffer width -- sets amr.
+// regrid_int directly, and raising it trades more-frequent regridding
+// for a correspondingly larger required buffer (derived below); 1 keeps
+// the buffer at the historical bare minimum (regrid every step).
+//
+// axion_strings.tagging.buffer_safety_factor (double, default 1.0, must
+// be >= 1.0): multiplies the bare-minimum derived buffer for extra
+// margin beyond the v=1 bound above -- e.g. covering AMReX's own box-
+// clustering rounding the buffered region to whole grids/blocking_factor
+// multiples in a way that could shave cells off one side, or simply
+// wanting headroom before trusting a new configuration. Only meaningful
+// once regrid_interval_steps has opted into this mechanism.
+//
+// amr.n_error_buf, if not already set by hand, is derived as
+// ceil(buffer_safety_factor * regrid_interval_steps * dt_multiplier) and
+// injected; if already set, it is only checked to be at *least* this
+// (more buffer is always safe, just costs more volume -- unlike amr.
+// regrid_int below, this is not required to match exactly). amr.
+// regrid_int, if not already set, is set to regrid_interval_steps; if
+// already set by hand too, it is cross-checked to match exactly (same
+// "cross-checked, not overwritten" pattern as every other derived AMR
+// parameter in this file, e.g. amr.n_cell/geometry.prob_extent in
+// apply_box_plan above).
+inline void apply_regrid_buffer_policy()
+{
+    GRParmParse amr_pp("amr");
+    int max_level = 0;
+    amr_pp.queryAdd("max_level", max_level);
+    if (max_level <= 0)
+    {
+        return; // no regridding happens; nothing to derive
+    }
+
+    GRParmParse tag_pp("axion_strings.tagging");
+    int regrid_interval_steps = 0; // 0 = mechanism not requested
+    tag_pp.queryAdd("regrid_interval_steps", regrid_interval_steps);
+    if (regrid_interval_steps == 0)
+    {
+        return; // opt-in only -- leaves hand-set amr.n_error_buf/
+                // regrid_int (if any) completely alone
+    }
+    if (regrid_interval_steps < 0)
+    {
+        tag_pp.error("regrid_interval_steps", "must be > 0");
+    }
+
+    double buffer_safety_factor = 1.0;
+    tag_pp.queryAdd("buffer_safety_factor", buffer_safety_factor);
+    if (buffer_safety_factor < 1.0)
+    {
+        tag_pp.error("buffer_safety_factor", "must be >= 1.0");
+    }
+
+    GRParmParse evolution_pp("evolution");
+    double dt_multiplier = 0.0;
+    evolution_pp.get("dt_multiplier", dt_multiplier);
+
+    const double n_error_buf_min =
+        buffer_safety_factor * regrid_interval_steps * dt_multiplier;
+    const int n_error_buf_derived =
+        std::max(1, static_cast<int>(std::ceil(n_error_buf_min)));
+
+    amrex::Print()
+        << "Regrid buffer policy (conventions.md sec.11): "
+           "regrid_interval_steps = "
+        << regrid_interval_steps
+        << ", buffer_safety_factor = " << buffer_safety_factor
+        << ", evolution.dt_multiplier = " << dt_multiplier << "\n"
+        << "  -> minimum buffer to keep a v=1 string inside the refined "
+           "region between regrids = "
+        << n_error_buf_derived << " cells\n";
+
+    if (amr_pp.contains("n_error_buf"))
+    {
+        int n_error_buf_set = 0;
+        amr_pp.get("n_error_buf", n_error_buf_set);
+        if (n_error_buf_set < n_error_buf_derived)
+        {
+            amr_pp.error(
+                "n_error_buf",
+                "is smaller than the derived safety minimum for the "
+                "requested axion_strings.tagging.regrid_interval_steps/"
+                "buffer_safety_factor -- either remove amr.n_error_buf to "
+                "let it be derived, or raise it to at least the minimum "
+                "printed above");
+        }
+    }
+    else
+    {
+        amr_pp.add("n_error_buf", n_error_buf_derived);
+        amrex::Print() << "  -> amr.n_error_buf set to " << n_error_buf_derived
+                       << "\n";
+    }
+
+    if (amr_pp.contains("regrid_int"))
+    {
+        int regrid_int_set = 0;
+        amr_pp.get("regrid_int", regrid_int_set);
+        if (regrid_int_set != regrid_interval_steps)
+        {
+            amr_pp.error(
+                "regrid_int",
+                "does not match axion_strings.tagging.regrid_interval_"
+                "steps -- either remove amr.regrid_int to let it be "
+                "derived, or fix axion_strings.tagging.regrid_interval_"
+                "steps to match");
+        }
+    }
+    else
+    {
+        amr_pp.add("regrid_int", regrid_interval_steps);
+        amrex::Print() << "  -> amr.regrid_int set to " << regrid_interval_steps
+                       << "\n";
+    }
+}
+
 // Masking (conventions.md sec.10, milestone-1.md task 1.7). The threshold
 // is a runtime parameter, never a compile-time constant (CLAUDE.md
 // constraint 4) -- it will be scanned; conventions.md sec.10/sec.14 record
@@ -790,12 +934,14 @@ inline void check_params()
     {
         read_masking_params("axion_strings.masking");
         read_tagging_params();
+        apply_regrid_buffer_policy();
         return;
     }
 
     const Background background = read_background();
     const double tau_i          = read_tau_i(background);
     apply_box_plan(background, tau_i);
+    apply_regrid_buffer_policy();
 
     std::string ic_mode = "homogeneous";
     GRParmParse("axion_strings").queryAdd("ic_mode", ic_mode);

@@ -30,7 +30,7 @@ Tracks progress against `milestone-1.md` task by task. Updated as work lands.
 | T2 mask unit test | Not started | |
 | T3 plane wave | Not started | |
 | T4 collapsing loop | Not started | |
-| T5 float vs double | Not started | |
+| T5 float vs double | Not started (build default changed, smoke-tested only) | 2026-09-19, with the user, ahead of moving to cluster-scale runs: `AxionStrings/GNUmakefile` now defaults to `PRECISION=FLOAT` (override with `make PRECISION=DOUBLE ...`; both configs coexist, precision-suffixed executable names). Rationale and risk are conventions.md sec.14's own existing decision-log entry, not new: float roughly halves state memory/`FillBoundary`/`FillPatch` volume, but headroom in `\|psi\|^2 - R^2` erodes with `log(m_r/H)` (~0.46 less reach than double); q/spectrum are the least-exposed observable, radial energy the early-warning one. Smoke-tested only so far, not the formal T5 comparison: the float build ran both `params_amr_validation_128.txt` (40 steps) and the full `params_circular_loop_test.txt` cleanly (no NaN/Inf), and the loop run's `loop_scalars.dat` matched the earlier double-precision run to ~7 significant figures throughout (e.g. `total_energy` at `t=10`: `3438.363` float vs `3438.365` double) -- consistent with ordinary float roundoff, not a bug, but not a substitute for actually running T5 (multiple `log(m_r/H)` values, comparing xi/spectrum/radial energy/total-energy conservation) before trusting float for a real production measurement. |
 
 # Milestone 2: Adaptive Mesh Refinement
 

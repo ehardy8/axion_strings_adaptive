@@ -8,9 +8,9 @@
 // A check that holds regardless of how docs/STATUS.md's open rho_tot
 // normalisation question resolves: the homogeneous vacuum solution
 // psi = R(tau), Pi = R'(tau) (tasks 1.2/1.3: an exact solution of the free
-// EOM, since Pi - psi/(b_inv tau) = R' - R/(b_inv tau) = 0 identically, as
-// R'/R = 1/(b_inv tau) exactly) must give exactly zero energy density --
-// uniform, at the potential minimum, at rest relative to the background.
+// EOM, since Pi - (R'/R) psi = R' - (R'/R) R = 0 identically) must give
+// exactly zero energy density -- uniform, at the potential minimum, at
+// rest relative to the background.
 
 TEST_CASE("rho_tot_pointwise is exactly zero for the homogeneous vacuum "
           "solution psi=R(tau), Pi=R'(tau)")
@@ -28,7 +28,7 @@ TEST_CASE("rho_tot_pointwise is exactly zero for the homogeneous vacuum "
         const double rho = rho_tot_pointwise(
             /*psi1=*/R, /*psi2=*/0.0, /*Pi1=*/Rprime, /*Pi2=*/0.0,
             /*grad_psi1_sq=*/0.0, /*grad_psi2_sq=*/0.0, R, lambda,
-            bkg.b_inv, tau);
+            /*R_prime_over_R=*/1.0 / (bkg.b_inv * tau));
 
         CHECK(rho == doctest::Approx(0.0).epsilon(1.0e-10));
     }
@@ -85,7 +85,7 @@ TEST_CASE("radial_kinetic_energy_pointwise + tangential = exact |phi_dot|^2, "
             theta_prime * theta_prime * psi_sq / (R * R * R * R);
 
         const double radial_kinetic = radial_kinetic_energy_pointwise(
-            psi1, psi2, Pi1, Pi2, R, b_inv, tau);
+            psi1, psi2, Pi1, Pi2, R, 1.0 / (b_inv * tau));
 
         CHECK(radial_kinetic + tangential_kinetic ==
              doctest::Approx(exact_full_kinetic).epsilon(1.0e-10));
@@ -95,8 +95,8 @@ TEST_CASE("radial_kinetic_energy_pointwise + tangential = exact |phi_dot|^2, "
 TEST_CASE("radial_kinetic_energy_pointwise is exactly zero at psi=(0,0) "
           "(guarded, not a 0/0 NaN)")
 {
-    CHECK(radial_kinetic_energy_pointwise(0.0, 0.0, 1.0, -0.4, 1.5, 1.7,
-                                          2.3) == 0.0);
+    CHECK(radial_kinetic_energy_pointwise(0.0, 0.0, 1.0, -0.4, 1.5,
+                                          1.0 / (1.7 * 2.3)) == 0.0);
 }
 
 TEST_CASE("radial_gradient_energy_pointwise + tangential = exact "

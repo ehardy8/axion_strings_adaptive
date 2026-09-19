@@ -260,6 +260,43 @@ inline OutputCadence read_output_cadence()
 // effectively off (a threshold no field configuration can cross), since
 // conventions.md sec.11 says to assess this criterion rather than copy
 // it. queryAdd, not get: this is meant to be left unset for most runs.
+//
+// Radial-gradient criterion (2026-09-19, with the user: "using the
+// gradient of the radial mode instead of (or as well as) the winding" for
+// the physical-mode network schedule, keeping the existing log(m_r/H)
+// level-*addition* schedule -- when a new level is *allowed to exist* --
+// completely unchanged; only which per-cell criterion is used to tag
+// cells within an already-permitted level changes here). Off by default
+// (same "genuinely off" convention as gradient_threshold above), axion_
+// strings.tagging.radial_gradient_threshold to enable explicitly.
+//
+// A physically-derived default was tried and rejected the same day, kept
+// here as a documented, ruled-out data point rather than silently
+// forgotten: near a global string's core, |psi| = R(tau) |phi|/v rises as
+// R(tau) m_r(tau) c1 rho / sqrt(2) (conventions.md sec.8/13's exact
+// equilibrium near-core slope c1 = 0.41222, and the extra 1/sqrt(2) from
+// phi's own v/sqrt(2) normalisation there), so its comoving spatial
+// gradient peaks at exactly R(tau) m_r(tau) c1/sqrt(2) at an isolated,
+// static core. Since BoxPlan.hpp's own N2(tau) = 1/(R(tau) dx m_r(tau)),
+// dx * |grad(r)|_peak = c1/(sqrt(2) N2(tau)) identically at that core --
+// no separate normalisation by R(tau) needed, it cancels exactly. Setting
+// the threshold to this value at N2 = the run's own target was meant to
+// reproduce "the tagged condition for stationary strings" while
+// automatically widening for a degraded-resolution or boosted core.
+// **Tested directly against params_amr_validation_128.txt (the same
+// config Phase 1 validated at ~37% tagged at level 1's first onset with
+// the plaquette criterion alone) and rejected**: with this derived
+// threshold (0.2915 at N2=1), level 1 came online at exactly the
+// predicted TIME=5.091 (schedule-gating itself unaffected, as intended),
+// but tagged 100% of the domain immediately, not ~37% -- the ambient
+// radial-mode gradient in a real, dense Fourier-relaxed tangle (as
+// opposed to a single isolated static string, which is all the
+// derivation above modelled) is evidently comparable to or above this
+// threshold almost everywhere, not just at cores. The derivation isn't
+// necessarily wrong on its own terms, but a single-isolated-core
+// calibration doesn't transfer to the network's actual field statistics
+// without further work -- if this criterion is revisited for network use,
+// treat this as the starting point to explain, not re-derive from scratch.
 inline StringTaggerParams read_tagging_params()
 {
     GRParmParse pp("axion_strings.tagging");
@@ -268,6 +305,11 @@ inline StringTaggerParams read_tagging_params()
     if (params.gradient_threshold <= 0.0)
     {
         pp.error("gradient_threshold", "must be > 0");
+    }
+    pp.queryAdd("radial_gradient_threshold", params.radial_gradient_threshold);
+    if (params.radial_gradient_threshold <= 0.0)
+    {
+        pp.error("radial_gradient_threshold", "must be > 0");
     }
     return params;
 }
@@ -734,6 +776,23 @@ inline void apply_box_plan(const Background &background, double tau_i)
 // AxionStringsLevel::Phase.
 inline void check_params()
 {
+    // Flat-space (no cosmological expansion) loop simulations (2026-09-19,
+    // with the user): box planning, the log(m_r/H) output cadence and the
+    // AMR level schedule all assume an expanding background (Background's
+    // own required inputs, e.g. log_mr_over_h_i, are not physically
+    // meaningful here) and simply do not apply. geometry.prob_extent/
+    // amr.n_cell are set directly (like the ad hoc tasks 1.2/1.3 smoke
+    // test configs), and the stop condition is evolution.stop_time/
+    // max_steps, set by hand -- there is no tau_f to derive.
+    bool flat_space = false;
+    GRParmParse("axion_strings").queryAdd("flat_space", flat_space);
+    if (flat_space)
+    {
+        read_masking_params("axion_strings.masking");
+        read_tagging_params();
+        return;
+    }
+
     const Background background = read_background();
     const double tau_i          = read_tau_i(background);
     apply_box_plan(background, tau_i);

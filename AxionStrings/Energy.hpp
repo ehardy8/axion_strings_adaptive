@@ -15,12 +15,15 @@
 //   rho = |phi_dot|^2 + |grad phi|^2/R^2 + V(phi),   phi_dot = d(phi)/dt.
 //
 // Converting to psi = R phi/v and conformal time tau (Pi = d(psi)/d(tau)):
-// phi = v psi/R, and using dt = R dtau and R'/R = 1/(b_inv tau) (sec.5):
-//   d(phi)/d(tau) = (v/R)(Pi - psi/(b_inv tau))              [conformal]
-//   phi_dot = [d(phi)/d(tau)]/R = (v/R^2)(Pi - psi/(b_inv tau))
+// phi = v psi/R, and using dt = R dtau and R'/R (sec.5's power-law
+// Background gives R'/R = 1/(b_inv tau); this is not assumed here --
+// R_prime_over_R below is whatever the caller's own background gives,
+// generalised 2026-09-19 for flat space, where R'/R = 0 identically):
+//   d(phi)/d(tau) = (v/R)(Pi - (R'/R) psi)                   [conformal]
+//   phi_dot = [d(phi)/d(tau)]/R = (v/R^2)(Pi - (R'/R) psi)
 // (checked three independent ways: direct algebra, this formula, and
 // re-parametrising by t(tau) directly -- all agree). So
-//   |phi_dot|^2 = (v^2/R^4)|Pi - psi/(b_inv tau)|^2,
+//   |phi_dot|^2 = (v^2/R^4)|Pi - (R'/R) psi|^2,
 // i.e. R^-4, not conventions.md's literal R^-2. The gradient term picks up
 // the same extra 1/R^2 (grad_physical = grad_comoving/R, sec.3: "grad now
 // the comoving gradient"), so it is R^-4 too. The potential term, once
@@ -50,13 +53,21 @@
 
 #include <cmath>
 
+// `R_prime_over_R` is R'(tau)/R(tau) -- `1/(b_inv*tau)` for the main
+// power-law Background, 0 identically for flat space (FlatBackground.hpp,
+// milestone: flat-space loop simulations, 2026-09-19), and in general
+// whatever the caller's own Background-like class gives for R'/R. Taking
+// it directly (rather than `b_inv, tau` separately, as before) makes this
+// function correct for any background, not just the power-law one -- the
+// old parameterisation had no way to express R'/R=0 without a division by
+// an infinite b_inv.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE double
 rho_tot_pointwise(double psi1, double psi2, double Pi1, double Pi2,
                   double grad_psi1_sq, double grad_psi2_sq, double R,
-                  double lambda, double b_inv, double tau)
+                  double lambda, double R_prime_over_R)
 {
-    const double c1 = Pi1 - psi1 / (b_inv * tau);
-    const double c2 = Pi2 - psi2 / (b_inv * tau);
+    const double c1 = Pi1 - R_prime_over_R * psi1;
+    const double c2 = Pi2 - R_prime_over_R * psi2;
     const double kinetic  = c1 * c1 + c2 * c2;
     const double gradient = grad_psi1_sq + grad_psi2_sq;
 
@@ -113,11 +124,11 @@ axion_gradient_energy_pointwise(double grad_theta_sq_comoving, double R)
 //
 // |phi| = v|psi|/R (v=1, code units), so d|phi|/dt (cosmic time) is the
 // *radial* projection of phi_dot's numerator (c1,c2) = (Pi1,Pi2) -
-// psi/(b_inv tau) onto psi's own direction psi_hat = psi/|psi|:
+// (R'/R) psi onto psi's own direction psi_hat = psi/|psi|:
 //   d|phi|/dt = (v/R^2) (psi1 c1 + psi2 c2)/|psi|
 // -- exact, not linearised: the *orthogonal* (tangential) projection of
 // the same (c1,c2) is exactly f_a*theta_prime (Masking.hpp's identity),
-// confirmed algebraically (the (1/(b_inv tau))*psi_i terms cancel exactly
+// confirmed algebraically (the (R'/R)*psi_i terms cancel exactly
 // in psi1 c2 - psi2 c1, leaving psi1 Pi2 - Pi1 psi2), so kinetic + radial
 // = tangential exactly decomposes the full |phi_dot|^2 via Pythagoras --
 // checked by expanding both sides. psi=0 is a measure-zero core point
@@ -125,11 +136,10 @@ axion_gradient_energy_pointwise(double grad_theta_sq_comoving, double R)
 // Masking.hpp/EnergyKernel.hpp already use for theta_prime there.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE double
 radial_kinetic_energy_pointwise(double psi1, double psi2, double Pi1,
-                                double Pi2, double R, double b_inv,
-                                double tau)
+                                double Pi2, double R, double R_prime_over_R)
 {
-    const double c1 = Pi1 - psi1 / (b_inv * tau);
-    const double c2 = Pi2 - psi2 / (b_inv * tau);
+    const double c1 = Pi1 - R_prime_over_R * psi1;
+    const double c2 = Pi2 - R_prime_over_R * psi2;
     const double psi_sq = psi1 * psi1 + psi2 * psi2;
     if (psi_sq <= 0.0)
     {

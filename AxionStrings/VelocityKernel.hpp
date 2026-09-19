@@ -30,10 +30,14 @@ struct VelocityResult
 // cells covered by a finer level from this level's own reduction -- see
 // StringFinder.hpp::count_plaquettes for the identical convention. `nullptr`
 // (the default) reproduces the exact prior single-level behaviour.
+// `R_prime_over_R` is R'(tau)/R(tau) (see Energy.hpp's rho_tot_pointwise
+// comment for the same generalisation, made 2026-09-19 for flat-space
+// loop simulations, where R'/R = 0 identically) -- previously `b_inv,tau`
+// separately, which could not express that case.
 [[nodiscard]] inline VelocityResult
 compute_velocity_at_pierced_corners(const amrex::MultiFab &state,
-                                    amrex::Real R, amrex::Real tau,
-                                    amrex::Real b_inv, amrex::Real m_r,
+                                    amrex::Real R, amrex::Real R_prime_over_R,
+                                    amrex::Real m_r,
                                     const amrex::iMultiFab *mask = nullptr)
 {
     amrex::ReduceOps<amrex::ReduceOpSum, amrex::ReduceOpSum> reduce_op;
@@ -44,8 +48,7 @@ compute_velocity_at_pierced_corners(const amrex::MultiFab &state,
     const auto &mask_arrs = (mask != nullptr) ? mask->const_arrays()
                                               : amrex::MultiArray4<int const>{};
     const bool has_mask  = (mask != nullptr);
-    const double inv_bt = 1.0 / (static_cast<double>(b_inv) *
-                                 static_cast<double>(tau));
+    const double inv_bt = static_cast<double>(R_prime_over_R);
     const double R_d    = R;
     const double m_r_d  = m_r;
 

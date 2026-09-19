@@ -1,0 +1,32 @@
+# Flat-space circular-loop smoke test (2026-09-19, with the user).
+# Single level first (max_level=0) to validate the IC/EOM/energy-
+# conservation pipeline before bringing AMR (and the new boost-aware
+# radial-gradient tagging criterion) into it.
+#
+# Box: L=16, N=64 -> dx=0.25 (m_r=1, so ~4 points per core width).
+# Loop radius = 3/m_r = 3, comfortably inside the box with padding.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = 20
+amr.max_level = 0
+amr.n_cell = 64 64 64
+amr.max_grid_size   = 32
+amr.blocking_factor = 16
+
+geometry.is_periodic = 1 1 1
+geometry.prob_extent = 16.0 16.0 16.0
+geometry.center  = 8.0 8.0 8.0
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = 200
+evolution.stop_time = -1
+
+axion_strings.flat_space = 1
+axion_strings.flat.m_r = 1.0
+axion_strings.flat.output_cadence_steps = 10
+
+axion_strings.ic_mode = circular_loop
+axion_strings.loop_radius_over_mr = 3.0
+axion_strings.loop_deform_mode = 2
+axion_strings.loop_deform_amplitude = 0.15

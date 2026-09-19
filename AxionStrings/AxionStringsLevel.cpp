@@ -79,6 +79,55 @@ gather_composite_levels(amrex::Amr &parent, int state_index, amrex::Real time,
     }
     return out;
 }
+
+// Milestone-2 Phase 3 (2026-09-19, with the user): "average fine data down,
+// FFT the coarse level only" (the plan agreed when this milestone started,
+// matching conventions.md sec.11's own settled policy) -- an FFT needs one
+// uniform grid, and level 0's own genuinely-evolved state in a refined
+// region is *not* that grid: it is a real, independently-timestepped
+// solution at level 0's own (coarser) resolution, simply superseded there
+// by the finer level's more accurate one, with nothing in this codebase's
+// post-timestep flow keeping the two in sync (no automatic average-down
+// step exists elsewhere). Left alone, the level-0-only spectrum quietly
+// samples the *worse* of the two available solutions in every refined
+// region, which grows as a fraction of the domain does. This cascades
+// amrex::average_down from the finest level down to level 0, one pair of
+// adjacent levels at a time (a plain arithmetic mean of the ratio^3 fine
+// cells under each coarse cell needs no volume weighting -- the cells are
+// literally all the same shape at a given level): average_down only
+// overwrites the *covered* subset of each destination level's cells
+// (amrex::MultiFab::ParallelCopy from a temporary matching just the fine
+// footprint -- confirmed from AMReX's own implementation, not assumed),
+// leaving cells with nothing finer above them exactly as gather_composite_
+// levels already produced them. The result at index 0 is a single
+// level-0-resolution field equal to the best available data everywhere:
+// level 0's own solution where nothing refines it, and the (recursively
+// corrected) finer solution's average where something does.
+amrex::MultiFab
+collapse_to_level0(const std::vector<CompositeLevelData> &levels,
+                   amrex::Amr &parent)
+{
+    const int finest_level = static_cast<int>(levels.size()) - 1;
+
+    std::vector<amrex::MultiFab> corrected;
+    corrected.reserve(levels.size());
+    for (const CompositeLevelData &lvl : levels)
+    {
+        amrex::MultiFab copy(lvl.state.boxArray(), lvl.state.DistributionMap(),
+                             NUM_VARS, 0);
+        amrex::MultiFab::Copy(copy, lvl.state, 0, 0, NUM_VARS, 0);
+        corrected.push_back(std::move(copy));
+    }
+
+    for (int l = finest_level - 1; l >= 0; --l)
+    {
+        amrex::average_down(corrected[static_cast<std::size_t>(l + 1)],
+                            corrected[static_cast<std::size_t>(l)],
+                            parent.Geom(l + 1), parent.Geom(l), 0, NUM_VARS,
+                            2);
+    }
+    return std::move(corrected[0]);
+}
 } // namespace
 
 void AxionStringsLevel::variableSetUp()
@@ -86,6 +135,27 @@ void AxionStringsLevel::variableSetUp()
     BL_PROFILE("AxionStringsLevel::variableSetUp()");
 
     state_variable_set_up();
+
+    s_flat_space = false;
+    amrex::ParmParse("axion_strings").queryAdd("flat_space", s_flat_space);
+    if (s_flat_space)
+    {
+        // See AxionStringsParams::check_params()'s matching bypass for why
+        // none of the FRW-specific reads below apply here.
+        double m_r = 1.0;
+        amrex::ParmParse("axion_strings.flat").queryAdd("m_r", m_r);
+        s_flat_background = FlatBackground(m_r);
+        amrex::ParmParse("axion_strings.flat")
+            .queryAdd("output_cadence_steps", s_flat_output_cadence_steps);
+
+        s_has_tau_f          = false;
+        s_has_level_schedule = false;
+        s_energy_masking =
+            AxionStringsParams::read_masking_params("axion_strings.masking");
+        s_tagging_params = AxionStringsParams::read_tagging_params();
+        s_phase          = Phase::Evolving;
+        return;
+    }
 
     s_background = AxionStringsParams::read_background();
     s_tau_i      = AxionStringsParams::read_tau_i(s_background);
@@ -325,6 +395,312 @@ void AxionStringsLevel::initData()
         return;
     }
 
+    if (ic_mode == "circular_loop")
+    {
+        // Flat-space loop simulations (2026-09-19, with the user): a
+        // closed, axisymmetric vortex ring of radius R_loop =
+        // loop_radius_over_mr/m_r, ring axis along z, centered on
+        // geometry.center. Reuses the same radial profile function
+        // (rho_hat/sqrt(rho_hat^2+2)) as straight_string_test above, now
+        // as a function of distance from the *ring* rather than from a
+        // line, and the poloidal angle around the ring's own cross-
+        // section as the winding direction (not the azimuthal angle
+        // around the box's z-axis, which the field does not depend on at
+        // all before any deformation -- exact axisymmetry).
+        //
+        // Optional deformation (axion_strings.loop_deform_mode/
+        // _amplitude, both 0 by default = no deformation): an m-fold
+        // azimuthal perturbation to the ring's own radius,
+        // R_loop*(1 + eps*cos(m*phi)) -- needed because an exactly
+        // axisymmetric loop has no generic dynamics (it only self-
+        // similarly contracts; no kinks or cusps ever develop).
+        //
+        // Pi=0 (not (R'/R)*psi as straight_string_test above needs):
+        // flat space has R'/R=0 identically, so a stationary-shaped
+        // profile is genuinely at rest with Pi=0 -- none of
+        // straight_string_test's "far field must track the growing
+        // background" concern applies here.
+        //
+        // CORRECTION (2026-09-19, with the user): this comment used to
+        // claim the amplitude tail above was the *only* boundary issue,
+        // and that this construction was exempt from straight_string_
+        // test's own periodicity bug. That claim was wrong -- not
+        // checked before being written -- and was caught by directly
+        // evaluating theta_poloidal at the periodic z-seam. theta_
+        // poloidal = atan2(z, ds) saturates to +/-pi/2 for large |z|
+        // (needed nowhere near the ring itself, but z ranges over the
+        // *whole* periodic box); the two periodic images of a point
+        // diametrically opposite the ring in z (z=-L/2 vs z=+L/2) sit on
+        // opposite sides of that saturation, so psi jumps there by
+        // *order the full vacuum amplitude*, not a small residual --
+        // confirmed numerically (psi2 mismatch ~1.97 against amplitude
+        // ~0.98 for the params_circular_loop_test.txt geometry) and
+        // visually (a bright artifact band at z=+/-8 already in the raw,
+        // unevolved IC, which then radiates inward and visibly destroys
+        // the ring's own winding within a few light-crossing times --
+        // see docs/STATUS.md's "Known issues" entry on this). This is
+        // the *same* class of bug as straight_string_test's documented
+        // periodicity issue, just at a different seam (z here, rather
+        // than the seam diametrically opposite a straight pair). Fix
+        // deliberately parked, not decided -- see docs/STATUS.md. Do not
+        // trust energy/tension numbers or fine dynamics from this IC
+        // until it is resolved.
+        const amrex::Real R_i      = s_flat_background.R(0.0);
+        const amrex::Real m_r_test = s_flat_background.m_r;
+
+        amrex::ParmParse pp("axion_strings");
+        double loop_radius_over_mr = 0.0;
+        pp.get("loop_radius_over_mr", loop_radius_over_mr);
+        if (loop_radius_over_mr <= 0.0)
+        {
+            amrex::Abort("axion_strings.loop_radius_over_mr must be > 0");
+        }
+        const amrex::Real R_loop = loop_radius_over_mr / m_r_test;
+
+        int deform_mode              = 0;
+        amrex::Real deform_amplitude = 0.0;
+        pp.queryAdd("loop_deform_mode", deform_mode);
+        pp.queryAdd("loop_deform_amplitude", deform_amplitude);
+
+        std::array<amrex::Real, AMREX_SPACEDIM> center{};
+        amrex::ParmParse().get("geometry.center", center);
+        const auto dx      = Geom().CellSizeArray();
+        const auto prob_lo = Geom().ProbLoArray();
+
+        amrex::MultiFab &state_new = get_new_data(state_index);
+        auto const &arrs           = state_new.arrays();
+
+        amrex::ParallelFor(
+            state_new, state_new.nGrowVect(),
+            [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept
+            {
+                const amrex::Real x =
+                    prob_lo[0] + (i + 0.5) * dx[0] - center[0];
+                const amrex::Real y =
+                    prob_lo[1] + (j + 0.5) * dx[1] - center[1];
+                const amrex::Real z =
+                    prob_lo[2] + (k + 0.5) * dx[2] - center[2];
+
+                const amrex::Real s = std::sqrt(x * x + y * y);
+                const amrex::Real phi_azimuthal = std::atan2(y, x);
+                const amrex::Real R_local =
+                    R_loop * (1.0 + deform_amplitude *
+                                        std::cos(deform_mode * phi_azimuthal));
+                const amrex::Real ds  = s - R_local;
+                const amrex::Real rho = std::sqrt(ds * ds + z * z);
+                const amrex::Real theta_poloidal = std::atan2(z, ds);
+
+                const amrex::Real rho_hat = m_r_test * rho;
+                const amrex::Real g =
+                    rho_hat / std::sqrt(rho_hat * rho_hat + 2.0);
+                const amrex::Real amp = R_i * g;
+
+                arrs[box_no](i, j, k, c_psi1) = amp * std::cos(theta_poloidal);
+                arrs[box_no](i, j, k, c_psi2) = amp * std::sin(theta_poloidal);
+                arrs[box_no](i, j, k, c_Pi1)  = 0.0;
+                arrs[box_no](i, j, k, c_Pi2)  = 0.0;
+            });
+        amrex::Gpu::streamSynchronize();
+        return;
+    }
+
+    if (ic_mode == "four_string_collision")
+    {
+        // Flat-space loop simulations (2026-09-19, with the user: "collide
+        // 4 strings in such a way that they intersect to make a loop" ->
+        // "two colliding pairs -> trapped loop"). Geometry, worked out
+        // from scratch: pair A is 2 antiparallel z-strings (like
+        // straight_string_test, extending along z, transverse plane
+        // (x,y)) separated by 2*sep in x, both at the *same* moving
+        // y-position y_A(t); pair B is 2 antiparallel x-strings
+        // (transverse plane (y,z)) separated by 2*sep in z, both at the
+        // same moving y-position y_B(t). A and B share the y-axis as
+        // their common line of approach: at the instant y_A(t)=y_B(t),
+        // each of A's 2 strings is coplanar with (and crosses) each of
+        // B's 2 strings exactly once (both lie in that common y-plane;
+        // A's string is a vertical line in (x,z) at fixed x, B's is a
+        // horizontal line at fixed z), at the 4 corners of a
+        // sep-by-sep rectangle in x-z -- the trapped loop. Antiparallel
+        // pairing (not 2 independent strings) for the same reason
+        // straight_string_test needs it: a single vortex cannot close on
+        // a periodic torus (task 1.6's own finding).
+        //
+        // Field construction: the exact "translating soliton" chain rule
+        // already validated for a single boosted string (Masking.hpp's
+        // own boosted-string test), applied to each of the 4 strings
+        // (all moving along y, all perpendicular to their own length --
+        // the transverse-boost case that construction covers), combined
+        // via the direct product rule for the 4-vortex product ansatz
+        // (deliberately not a log-derivative shortcut, which would divide
+        // by an individual vortex's own amplitude -- exactly zero at that
+        // vortex's own core -- so is not safe on a grid point that lands
+        // near one).
+        //
+        // First attempt at this construction -- smoke-tested for basic
+        // sanity (no crash, plausible N_p/energy at t=0) but not yet
+        // validated as thoroughly as circular_loop above (e.g. no
+        // dedicated check that reconnection produces a clean single loop
+        // rather than some other outcome); flagged to the user rather
+        // than presented as fully trusted.
+        //
+        // CONFIRMED BUG (2026-09-19, with the user), same class as
+        // circular_loop's own periodicity correction just above and as
+        // straight_string_test's documented issue: theta below is built
+        // from atan2() of a *raw, unwrapped* transverse coordinate (u =
+        // gamma*(y +/- approach) here), which saturates to +/-pi/2 for
+        // large |u| -- since the pairs sit only ~4 units from a periodic
+        // boundary 10 units away, the two periodic images of a point
+        // land on opposite sides of that saturation, producing an
+        // order-1 (not small-residual) psi discontinuity right at the
+        // periodic seam (confirmed numerically: psi2 mismatch ~1.85
+        // against amplitude ~0.92 for params_four_string_test.txt).
+        // That discontinuity radiates inward from t=0 and visibly
+        // destroys both pairs' winding within a few light-crossing
+        // times -- this is why N_p/string_length in loop_scalars.dat
+        // collapse to exactly 0 well before the strings actually meet
+        // (t ~ approach/v), not a resolution or plaquette-detector
+        // artifact. Fix deliberately parked, not decided -- see
+        // docs/STATUS.md's "Known issues" entry. Do not trust any
+        // energy/tension number or fine dynamics from this IC, or draw
+        // conclusions about the intended collision physics, until this
+        // is resolved.
+        const amrex::Real R_i      = s_flat_background.R(0.0);
+        const amrex::Real m_r_test = s_flat_background.m_r;
+
+        amrex::ParmParse pp("axion_strings");
+        double sep_over_mr = 0.0;
+        pp.get("collision_separation_over_mr", sep_over_mr);
+        if (sep_over_mr <= 0.0)
+        {
+            amrex::Abort(
+                "axion_strings.collision_separation_over_mr must be > 0");
+        }
+        double v_collision = 0.3;
+        pp.queryAdd("collision_velocity", v_collision);
+        if (v_collision <= 0.0 || v_collision >= 1.0)
+        {
+            amrex::Abort(
+                "axion_strings.collision_velocity must be in (0, 1)");
+        }
+        double approach_over_mr = 4.0 / sep_over_mr;
+        pp.queryAdd("collision_initial_approach_over_mr", approach_over_mr);
+
+        const amrex::Real sep    = sep_over_mr / m_r_test;
+        const amrex::Real v      = v_collision;
+        const amrex::Real gamma_boost = 1.0 / std::sqrt(1.0 - v * v);
+        // How far apart (in y) the two pairs start, in units of 1/m_r --
+        // default 4 core widths, enough that the pairs do not already
+        // overlap at t=0; they meet (y_A=y_B) at t = approach/v.
+        const amrex::Real approach = approach_over_mr / m_r_test;
+
+        std::array<amrex::Real, AMREX_SPACEDIM> center{};
+        amrex::ParmParse().get("geometry.center", center);
+        const auto dx      = Geom().CellSizeArray();
+        const auto prob_lo = Geom().ProbLoArray();
+
+        amrex::MultiFab &state_new = get_new_data(state_index);
+        auto const &arrs           = state_new.arrays();
+
+        amrex::ParallelFor(
+            state_new, state_new.nGrowVect(),
+            [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept
+            {
+                const amrex::Real x =
+                    prob_lo[0] + (i + 0.5) * dx[0] - center[0];
+                const amrex::Real y =
+                    prob_lo[1] + (j + 0.5) * dx[1] - center[1];
+                const amrex::Real z =
+                    prob_lo[2] + (k + 0.5) * dx[2] - center[2];
+
+                // Single boosted vortex, in its own 2 transverse
+                // coordinates (u moving at du_dt, w fixed): returns
+                // {amp, dAmp/dt, theta, dTheta/dt} at t=0, via the exact
+                // chain rule (rho=sqrt(u^2+w^2), theta=atan2(u,w),
+                // amp=R_i*g(m_r*rho), g(s)=s/sqrt(s^2+2), g'(s)=2/
+                // (s^2+2)^1.5).
+                auto vortex = [=](amrex::Real u, amrex::Real w,
+                                  amrex::Real du_dt)
+                    -> amrex::GpuArray<amrex::Real, 4>
+                {
+                    const amrex::Real rho = std::sqrt(u * u + w * w);
+                    const amrex::Real theta = std::atan2(u, w);
+                    const amrex::Real s   = m_r_test * rho;
+                    const amrex::Real denom = std::sqrt(s * s + 2.0);
+                    const amrex::Real g   = s / denom;
+                    const amrex::Real amp = R_i * g;
+                    const amrex::Real g_prime =
+                        2.0 / (denom * denom * denom);
+                    // d(rho)/du = u/rho, singular (direction-dependent)
+                    // only exactly at rho=0 (measure zero) -- guarded to
+                    // 0 there, matching the same "0/0 at the exact core"
+                    // convention used throughout this codebase (e.g.
+                    // Masking.hpp, EnergyKernel.hpp).
+                    const amrex::Real dRho_du = (rho > 0.0) ? u / rho : 0.0;
+                    const amrex::Real dTheta_du =
+                        (rho > 0.0) ? w / (rho * rho) : 0.0;
+                    const amrex::Real dAmp_dt =
+                        R_i * m_r_test * g_prime * dRho_du * du_dt;
+                    const amrex::Real dTheta_dt = dTheta_du * du_dt;
+                    return {amp, dAmp_dt, theta, dTheta_dt};
+                };
+
+                // Pair A (z-strings, transverse plane (x,y)): y_A(t) =
+                // -approach + v*t, so d(y-y_A)/dt = -v; separated by
+                // +/-sep in x. The moving transverse coordinate is
+                // Lorentz-contracted (gamma*(y-y_A(t))), the standard
+                // translating-soliton ansatz (same as Masking.hpp's own
+                // boosted-string test) -- both the coordinate itself and
+                // its time derivative pick up the factor of gamma.
+                const auto a1 =
+                    vortex(gamma_boost * (y + approach), x - sep,
+                          -gamma_boost * v);
+                const auto a2 =
+                    vortex(gamma_boost * (y + approach), x + sep,
+                          -gamma_boost * v);
+                // Pair B (x-strings, transverse plane (y,z)): y_B(t) =
+                // +approach - v*t, so d(y-y_B)/dt = +v; separated by
+                // +/-sep in z.
+                const auto b1 =
+                    vortex(gamma_boost * (y - approach), z - sep,
+                          gamma_boost * v);
+                const auto b2 =
+                    vortex(gamma_boost * (y - approach), z + sep,
+                          gamma_boost * v);
+
+                const amrex::Real amp_total =
+                    a1[0] * a2[0] * b1[0] * b2[0];
+                // Direct product rule (not a log-derivative shortcut,
+                // which would divide by an individual amp -- exactly
+                // zero at that vortex's own core).
+                const amrex::Real dAmpTotal_dt =
+                    a1[1] * a2[0] * b1[0] * b2[0] +
+                    a1[0] * a2[1] * b1[0] * b2[0] +
+                    a1[0] * a2[0] * b1[1] * b2[0] +
+                    a1[0] * a2[0] * b1[0] * b2[1];
+                // Antiparallel pairing: A1-A2, B1-B2 (each pair's net
+                // winding is zero, required for periodicity -- task
+                // 1.6's own finding, reused here).
+                const amrex::Real theta_total =
+                    a1[2] - a2[2] + b1[2] - b2[2];
+                const amrex::Real dThetaTotal_dt =
+                    a1[3] - a2[3] + b1[3] - b2[3];
+
+                const amrex::Real cos_theta = std::cos(theta_total);
+                const amrex::Real sin_theta = std::sin(theta_total);
+
+                arrs[box_no](i, j, k, c_psi1) = amp_total * cos_theta;
+                arrs[box_no](i, j, k, c_psi2) = amp_total * sin_theta;
+                arrs[box_no](i, j, k, c_Pi1) =
+                    dAmpTotal_dt * cos_theta -
+                    amp_total * sin_theta * dThetaTotal_dt;
+                arrs[box_no](i, j, k, c_Pi2) =
+                    dAmpTotal_dt * sin_theta +
+                    amp_total * cos_theta * dThetaTotal_dt;
+            });
+        amrex::Gpu::streamSynchronize();
+        return;
+    }
+
     const bool generating_relaxed_ic = (ic_mode == "fourier_relaxed");
 
     if (generating_relaxed_ic || ic_mode == "fourier")
@@ -400,7 +776,17 @@ void AxionStringsLevel::specific_eval_rhs(amrex::MultiFab &a_soln,
     amrex::Real curvature_coeff{};
     amrex::Real lambda{};
     amrex::Real R_squared{};
-    if (s_phase == Phase::Relaxing)
+    if (s_flat_space)
+    {
+        // Flat-space loop simulations (2026-09-19, with the user): R=1,
+        // curvature=0 identically, lambda=m_r^2 constant -- a_time is
+        // just t (cosmic time = conformal time when R=1), unused here
+        // since none of these three quantities depend on it.
+        curvature_coeff = s_flat_background.curvature_term_coeff(a_time);
+        lambda           = s_flat_background.lambda(a_time);
+        R_squared        = 1.0;
+    }
+    else if (s_phase == Phase::Relaxing)
     {
         // Pre-evolution's own clock starts at a_time = 0 = tau_pre.
         const amrex::Real tau_pre = a_time;
@@ -438,6 +824,118 @@ void AxionStringsLevel::specific_post_timestep()
     // scalars are a global (not per-level) diagnostic in any case.
     if (Level() != 0)
     {
+        return;
+    }
+
+    if (s_flat_space)
+    {
+        // Flat-space loop simulations (2026-09-19, with the user): a
+        // deliberately minimal, self-contained diagnostic path -- energy
+        // conservation (there is no expansion to redshift it away, so
+        // rho_tot*volume should be constant to good precision: the single
+        // most useful correctness check for a loop run), string length
+        // (via the same plaquette count used everywhere else) and mean
+        // velocity/Lorentz factor at pierced-plaquette corners. xi/tension
+        // (a network-density concept) and the spectrum are not meaningful
+        // for a single loop and are not computed here. Output cadence is
+        // a fixed step count (s_flat_output_cadence_steps) -- there is no
+        // log(m_r/H) to trigger on.
+        ++s_steps_since_flat_output;
+        if (s_steps_since_flat_output < s_flat_output_cadence_steps)
+        {
+            return;
+        }
+        s_steps_since_flat_output = 0;
+
+        const amrex::Real t = get_state_data(state_index).curTime();
+        const std::vector<CompositeLevelData> levels =
+            gather_composite_levels(*parent, state_index, t, 2);
+
+        long n_p_plain_total  = 0;
+        double ell_comoving    = 0.0;
+        double velocity_weighted_sum   = 0.0;
+        double velocity_weighted_count = 0.0;
+        long velocity_corners_total    = 0;
+        std::vector<EnergyLevelInput> energy_levels;
+        energy_levels.reserve(levels.size());
+
+        const amrex::Real m_r_now = s_flat_background.m_r;
+        for (const CompositeLevelData &lvl : levels)
+        {
+            const amrex::iMultiFab *mask_ptr =
+                lvl.has_mask ? &lvl.mask : nullptr;
+
+            const PlaquetteCounts counts_l =
+                count_plaquettes(lvl.state, mask_ptr);
+            n_p_plain_total += counts_l.n_p_plain;
+            ell_comoving += (2.0 / 3.0) *
+                          static_cast<double>(counts_l.n_p_plain) * lvl.dx;
+
+            // R=1, R'/R=0 identically in flat space.
+            const VelocityResult vel_l = compute_velocity_at_pierced_corners(
+                lvl.state, 1.0, 0.0, m_r_now, mask_ptr);
+            velocity_weighted_sum += vel_l.sum_gamma_sq_v_sq * lvl.dx;
+            velocity_weighted_count += static_cast<double>(vel_l.count) * lvl.dx;
+            velocity_corners_total += vel_l.count;
+
+            energy_levels.push_back(
+                EnergyLevelInput{&lvl.state, lvl.dx, mask_ptr});
+        }
+
+        const TotalEnergyResult energy = compute_composite_total_energy(
+            energy_levels, /*R=*/1.0, s_flat_background.lambda(t),
+            /*R_prime_over_R=*/0.0, s_energy_masking);
+        // n_total is a comoving volume (EnergyKernel.hpp); at R=1 that is
+        // also the physical volume, so n_total*rho_tot_unscreened is the
+        // physical total energy -- the conservation check this diagnostic
+        // exists for.
+        const double total_energy = energy.n_total * energy.rho_tot_unscreened;
+
+        const double mean_gamma_sq_v_sq =
+            (velocity_weighted_count > 0.0)
+                ? velocity_weighted_sum / velocity_weighted_count
+                : 0.0;
+        const double mean_gamma = std::sqrt(1.0 + mean_gamma_sq_v_sq);
+
+        amrex::Print() << "  [AxionStrings flat-space] t = " << t
+                       << "  N_p = " << n_p_plain_total
+                       << "  string length = " << ell_comoving
+                       << "  rho_tot(unscreened) = "
+                       << energy.rho_tot_unscreened
+                       << "  total energy = " << total_energy
+                       << "  <gamma^2 v^2> = " << mean_gamma_sq_v_sq
+                       << "  <gamma> = " << mean_gamma
+                       << "  N_corners = " << velocity_corners_total << "\n";
+
+        const bool is_restart_flat =
+            amrex::ParmParse("amr").countval("restart") > 0;
+        const amrex::Real restart_time_flat =
+            is_restart_flat ? get_gr_amr_ptr()->get_restart_time()
+                            : amrex::Real(0.0);
+        const bool first_loop_scalars_step =
+            !is_restart_flat && !s_wrote_loop_scalars_header;
+        s_wrote_loop_scalars_header = true;
+
+        SmallDataIO loop_scalars_file("loop_scalars", t, t,
+                                      restart_time_flat, SmallDataIO::APPEND,
+                                      first_loop_scalars_step);
+        if (first_loop_scalars_step)
+        {
+            loop_scalars_file.write_header_line(
+                {"N_p", "string_length", "rho_tot_unscreened",
+                 "total_energy", "mean_gamma_sq_v_sq", "mean_gamma",
+                 "n_velocity_corners"});
+        }
+        loop_scalars_file.remove_duplicate_time_data();
+        const std::vector<amrex::Real> loop_data_row{
+            static_cast<amrex::Real>(n_p_plain_total),
+            static_cast<amrex::Real>(ell_comoving),
+            static_cast<amrex::Real>(energy.rho_tot_unscreened),
+            static_cast<amrex::Real>(total_energy),
+            static_cast<amrex::Real>(mean_gamma_sq_v_sq),
+            static_cast<amrex::Real>(mean_gamma),
+            static_cast<amrex::Real>(velocity_corners_total)};
+        loop_scalars_file.write_time_data_line(loop_data_row);
         return;
     }
 
@@ -584,6 +1082,12 @@ void AxionStringsLevel::specific_post_timestep()
     const amrex::Real lambda     = s_background.lambda(tau);
     const amrex::Real m_r_now    = std::sqrt(lambda);
     const double R_tau           = s_background.R(tau);
+    // R'/R for the main Background is 1/(b_inv*tau) regardless of any
+    // fat->Moore switch (R(tau) itself is independent of the c(tau)
+    // schedule -- H(tau) = R'(tau)/R(tau)^2 relies on exactly this).
+    // Energy.hpp/Velocity.hpp take R_prime_over_R directly (not b_inv/tau
+    // separately) since 2026-09-19's flat-space generalisation.
+    const double R_prime_over_R = 1.0 / (s_background.b_inv * tau);
 
     // Milestone-2 Phase 2 (2026-09-19, with the user): xi, energies and
     // velocities are now composite -- evaluated over the whole AMR
@@ -630,7 +1134,7 @@ void AxionStringsLevel::specific_post_timestep()
             (2.0 / 3.0) * static_cast<double>(counts_l.n_p_weighted) * lvl.dx;
 
         const VelocityResult vel_l = compute_velocity_at_pierced_corners(
-            lvl.state, R_tau, tau, s_background.b_inv, m_r_now, mask_ptr);
+            lvl.state, R_tau, R_prime_over_R, m_r_now, mask_ptr);
         velocity_weighted_sum += vel_l.sum_gamma_sq_v_sq * lvl.dx;
         velocity_weighted_count += static_cast<double>(vel_l.count) * lvl.dx;
         velocity_corners_total += vel_l.count;
@@ -656,8 +1160,7 @@ void AxionStringsLevel::specific_post_timestep()
     // interaction split is not yet implemented, see docs/STATUS.md) and the
     // axion kinetic energy, both screened and unscreened.
     const TotalEnergyResult energy = compute_composite_total_energy(
-        energy_levels, R_tau, lambda, s_background.b_inv, tau,
-        s_energy_masking);
+        energy_levels, R_tau, lambda, R_prime_over_R, s_energy_masking);
 
     // String velocities (conventions.md sec.8, milestone-1.md task 1.10 --
     // velocities only, not curvature or loops, both deferred as more
@@ -868,12 +1371,26 @@ void AxionStringsLevel::specific_post_timestep()
         .queryAdd("compute_spectrum", compute_spectrum_flag);
     if (compute_spectrum_flag)
     {
+        // Milestone-2 Phase 3: the FFT still runs on level 0's own
+        // resolution only (an FFT needs one uniform grid -- established
+        // policy, conventions.md sec.11), but that grid's *data* now
+        // incorporates every finer level via collapse_to_level0's cascaded
+        // average_down, rather than level 0's own, less-accurate,
+        // independently-evolved solution in whatever region has since been
+        // refined. Computed once and shared by both the screened and
+        // unscreened passes below -- the averaging has nothing to do with
+        // masking, which still happens at exactly one place downstream
+        // (fill_masked_a_dot_buffer).
+        const amrex::MultiFab state_for_spectrum =
+            collapse_to_level0(levels, *parent);
+
         auto compute_and_report_spectrum =
             [&](const MaskingParams &masking, const char *label)
         {
-            amrex::MultiFab a_dot_buffer(state_new.boxArray(),
-                                         state_new.DistributionMap(), 1, 0);
-            fill_masked_a_dot_buffer(a_dot_buffer, state_new, masking,
+            amrex::MultiFab a_dot_buffer(state_for_spectrum.boxArray(),
+                                         state_for_spectrum.DistributionMap(),
+                                         1, 0);
+            fill_masked_a_dot_buffer(a_dot_buffer, state_for_spectrum, masking,
                                      s_background.R(tau));
             const Spectrum spectrum = compute_spectrum(a_dot_buffer, Geom());
 
@@ -1016,8 +1533,8 @@ void AxionStringsLevel::specific_post_timestep()
     if (save_projection_flag)
     {
         const Projection projection = compute_energy_projection(
-            state_new, dx, s_background.R(tau), lambda, s_background.b_inv,
-            tau, Geom().Domain());
+            state_new, dx, s_background.R(tau), lambda,
+            1.0 / (s_background.b_inv * tau), Geom().Domain());
 
         const bool first_projection_step =
             !is_restart && !s_wrote_projection_header;

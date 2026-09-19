@@ -105,8 +105,9 @@ struct TotalEnergySums
 // FourthOrderDerivatives::diff1 uses a 2-cell-wide stencil.
 [[nodiscard]] inline TotalEnergySums
 compute_total_energy_sums(const amrex::MultiFab &state, amrex::Real dx,
-                          amrex::Real R, amrex::Real lambda, amrex::Real b_inv,
-                          amrex::Real tau, const MaskingParams &screening,
+                          amrex::Real R, amrex::Real lambda,
+                          amrex::Real R_prime_over_R,
+                          const MaskingParams &screening,
                           const amrex::iMultiFab *mask = nullptr)
 {
     amrex::ReduceOps<amrex::ReduceOpSum, amrex::ReduceOpSum,
@@ -174,7 +175,7 @@ compute_total_energy_sums(const amrex::MultiFab &state, amrex::Real dx,
 
             const double rho = rho_tot_pointwise(
                 psi1, psi2, Pi1, Pi2, grad_psi1_sq, grad_psi2_sq, R, lambda,
-                b_inv, tau);
+                R_prime_over_R);
 
             const double theta_prime =
                 (psi_sq > 0.0) ? (psi1 * Pi2 - Pi1 * psi2) / psi_sq : 0.0;
@@ -184,7 +185,7 @@ compute_total_energy_sums(const amrex::MultiFab &state, amrex::Real dx,
                 axion_gradient_energy_pointwise(grad_theta_sq, R);
 
             const double rho_r_kin = radial_kinetic_energy_pointwise(
-                psi1, psi2, Pi1, Pi2, R, b_inv, tau);
+                psi1, psi2, Pi1, Pi2, R, R_prime_over_R);
             const double rho_r_grad = radial_gradient_energy_pointwise(
                 grad_psi1_sq, grad_psi2_sq, psi_sq, grad_theta_sq, R);
             const double rho_r_mass =
@@ -237,12 +238,12 @@ compute_total_energy_sums(const amrex::MultiFab &state, amrex::Real dx,
 // unaffected by Phase 2.
 [[nodiscard]] inline TotalEnergyResult
 compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
-                     amrex::Real R, amrex::Real lambda, amrex::Real b_inv,
-                     amrex::Real tau, const MaskingParams &screening,
+                     amrex::Real R, amrex::Real lambda,
+                     amrex::Real R_prime_over_R, const MaskingParams &screening,
                      long n_cells_total)
 {
     const TotalEnergySums sums = compute_total_energy_sums(
-        state, dx, R, lambda, b_inv, tau, screening, nullptr);
+        state, dx, R, lambda, R_prime_over_R, screening, nullptr);
     const auto n_total_d = static_cast<double>(n_cells_total);
 
     TotalEnergyResult out{};
@@ -286,7 +287,7 @@ struct EnergyLevelInput
 [[nodiscard]] inline TotalEnergyResult
 compute_composite_total_energy(const std::vector<EnergyLevelInput> &levels,
                                amrex::Real R, amrex::Real lambda,
-                               amrex::Real b_inv, amrex::Real tau,
+                               amrex::Real R_prime_over_R,
                                const MaskingParams &screening)
 {
     double acc[12] = {0.0};
@@ -296,7 +297,7 @@ compute_composite_total_energy(const std::vector<EnergyLevelInput> &levels,
     for (const EnergyLevelInput &lvl : levels)
     {
         const TotalEnergySums sums = compute_total_energy_sums(
-            *lvl.state, lvl.dx, R, lambda, b_inv, tau, screening, lvl.mask);
+            *lvl.state, lvl.dx, R, lambda, R_prime_over_R, screening, lvl.mask);
         const double vol = static_cast<double>(lvl.dx) *
                           static_cast<double>(lvl.dx) *
                           static_cast<double>(lvl.dx);

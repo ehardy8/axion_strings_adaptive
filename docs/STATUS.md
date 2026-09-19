@@ -20,7 +20,7 @@ Tracks progress against `milestone-1.md` task by task. Updated as work lands.
 | Single continuous run: pre-evolution -> main handoff without a restart | **Done** | Replaces the restart-based handoff entirely (2026-09-18, with the user): a cluster running the requested `N=512` production job might not have enough memory/scheduling headroom for two separate job submissions bridged by a full-grid checkpoint, and since each pre-evolution relaxation is only ever used for one main-run realisation (ensembles need different ICs per member), nothing was actually lost by removing the restart path -- "keep the workflow simple and direct." Mechanism: `axion_strings.mode`/`Mode` (Main vs PreEvolution) is gone entirely; a run is now driven purely by `axion_strings.ic_mode`, with a new value `"fourier_relaxed"` that starts the run in a new internal-only `AxionStringsLevel::Phase::Relaxing` state (`s_phase`, not user-facing) -- everything else defaults straight into `Phase::Evolving`. `specific_post_timestep()`'s xi-monitoring loop, on reaching `xi_target`, now calls the extracted `apply_pre_evolution_to_main_rescale()` (identical rescale math to the old `specific_post_restart`, just invoked in place on the live `MultiFab` instead of after an external restart) and flips `s_phase` to `Evolving` directly, rather than stopping the run for a checkpoint. `okToContinue()` is now the authoritative stop condition throughout (previously it did nothing in Main mode, relying entirely on `Main_AxionStrings.cpp`'s `evolution.stop_time` check): it compares the live `tau` against a newly-exposed `axion_strings.derived_tau_f` (box planning's `tau_f`, informational ParmParse injection, read back in `variableSetUp()`), correctly spanning both phases without needing to know in advance how long relaxation takes, since the transition is in-place rather than a restart with its own separate clock. `evolution.stop_time` is now forced to `-1` (unlimited) by box planning whenever unset, both because it is no longer needed (`okToContinue()` replaces it) and to defeat a real trap found in the previous entry's restart-based version: GRTeclyn's own `BaseParameterChecker` silently defaults `evolution.stop_time` to `1.0` if left unset. `amr.check_int >= 0` is no longer required for any run (checkpointing is fully optional everywhere now, crash-recovery only). **Known, accepted limitation, not addressed here** (user: "there are likely to be complications for the Moore protocol, but I don't think these will be insurmountable"): box planning's Moore-mode branch (`c0 = a_inv`, or any configured switch) still does not derive `tau_f` at all (pre-existing limitation, unrelated to this change -- a fat->Moore run already needed `geometry.prob_extent`/`evolution.stop_time` set by hand before this); `okToContinue()` detects this (`s_has_tau_f == false`) and falls back to always returning 1, i.e. `evolution.stop_time`/`max_steps` set by hand are still the stop condition for that case, unchanged from before. Verified end to end at small scale (`N=16`, a lax `xi_target` for a fast test) before replacing the two production param files: relaxation runs, the transition fires and prints the same handoff diagnostics as before (`tau_pre_end`, `kappa`, etc.), the main evolution continues seamlessly in the same process, `network_scalars.dat` starts recording immediately once the output cadence's first threshold is crossed post-transition, and the run stops itself, with no user-set step count, at exactly the box-planning-derived `tau_f` (confirmed by hand: `s_tau_i` after the transition plus the final `a_time` reproduces `tau_f` to the last printed digit). `params_pre_evolution.txt`/`params_main.txt` replaced by a single `params_production.txt`. |
 | **CRITICAL BUG (fixed 2026-09-18): every multi-rank diagnostic was silently wrong** | **Fixed** | Found while running the first genuinely multi-rank (`mpirun -n 4`) job of this whole project -- every earlier validation this session (T1, T3, box planning, the continuous-run refactor) used `-n 1`, which hid this completely. Root cause: `amrex::ReduceOps`/`ReduceData::value()` only reduces *within the calling rank's own boxes* -- confirmed directly from `amrex/Src/Base/AMReX_Reduce.H`: AMReX's own `Reduce::Sum`/`Min`/`Max` free-function wrappers never follow their `reduce_data.value(reduce_op)` with an `amrex::ParallelDescriptor::Reduce*Sum` call either, so a cross-rank total is always the *caller's* responsibility, not something the API does automatically. Three of our four `amrex::ReduceOps`-based kernels were missing this entirely: `StringFinder.hpp`'s `count_plaquettes` (`N_p`, hence every `xi`), `EnergyKernel.hpp`'s `compute_total_energy` (`rho_tot`, axion kinetic/gradient, `n_unmasked`, hence tension), and `VelocityKernel.hpp`'s `compute_velocity_at_pierced_corners` (`<gamma^2 v^2>`, `N_corners`) -- only `SpectrumKernel.hpp` and `ProjectionKernel.hpp` (both written with an explicit host-side loop + `ParallelDescriptor::ReduceRealSum`/`ReduceRealMax`/`ReduceLongSum` already) were unaffected. Confirmed the actual failure mode directly with a controlled test (`N=32`, 1 vs 2 vs 4 ranks, otherwise identical): `N_p`, `rho_tot_unscreened`, and `tension_core_only` each scaled down as almost exactly `1/n_ranks` -- each rank was reporting only its own local partial sum as if it were the whole domain's. Averaged (ratio-of-two-equally-wrong-sums) quantities like `rho_tot_screened` looked deceptively plausible despite being built from the same broken sums, which is what makes this class of bug dangerous -- CLAUDE.md's testing-discipline section calls out exactly this risk ("a bug that leaves a diagnostic plausible but wrong gets *harder* to spot as the ensemble grows"). Fixed by adding the missing `amrex::ParallelDescriptor::ReduceRealSum`/`ReduceLongSum` calls (batched into one 7-wide call in `EnergyKernel.hpp`) to all three kernels, matching the pattern already correct elsewhere. Verified: the same 1/2/4-rank test now gives bit-for-bit identical results at every rank count. **Practical implication**: any earlier local run in this project used `-n 1` and was therefore unaffected by this specific bug (its results stand), but this means the codebase had never actually been exercised at `n_ranks > 1` until now -- worth remembering if something *else* rank-count-dependent turns up later. |
 | **Tension normalisation fix: physical energy/length, general (not just T1) string length** | **Fixed** | Found while producing tension/energy/spectrum plots for an `N=256` fat-string screened run (2026-09-18, with the user). `tension_core_only`/`tension_core_plus_tail` (`AxionStringsLevel.cpp`) divided the core energy by `string_length_in_box = 2*Geom().ProbLength(2)`, hardcoded for T1's exactly-2-straight-strings-spanning-z geometry -- silently wrong for any general network (many loops, random orientation), where it just tracks `N_p` diluting rather than measuring a real tension. Separately, dimensional analysis turned up a second, independent bug: `rho_tot_pointwise` (`Energy.hpp`) is the genuine *physical* energy density (energy/physical-volume, derived from the canonically normalised `phi` Lagrangian), so the physical energy in the core cells is `R(tau)^3 * dx^3 * Sum_core(rho)`, not `dx^3 * Sum_core(rho)` -- the old formula omitted the `R(tau)^3` entirely and divided by a *comoving* length, missing another factor of `R(tau)`; net effect, exactly one missing factor of `R(tau)^2`. This went unnoticed because T1's own validation (the `~3.72`, `L`-independent result recorded under task 1.8 above) was evaluated at `R(tau) approx 1`, where the missing factor is invisible. **Fix** (deliberately deviating from a literal reading of conventions.md sec.10's presentation, per the user's explicit go-ahead to do so as long as the choice is documented here): `mu = R(tau)^2 * dx^3 * Sum_core(rho) / ell_comoving`, with `ell_comoving = (2/3) * N_p * dx` -- the same plaquette-count -> length relation `XiFormula.hpp` already uses for `xi`, i.e. a *statistical* average valid for a randomly-oriented network, explicitly **not** exact for T1's single deterministically axis-aligned string (T1 used the exact `2*L_z` for that reason, and does not have an automated regression test tying it to a specific tension value, so this change does not silently break CI -- but T1's previously recorded `~3.72` figure is now stale and would need re-deriving against the new formula if that specific check matters again). Verified on the `N=256` screened re-run: `tension_core_only` now sits in a roughly flat `O(7-9)` band after the initial transient (the core-localised contribution, no longer diluting to zero over the run), while `tension_core_plus_tail` grows slowly and roughly logarithmically with `log(m_r/H)` (`~13` to `~23` over `log(m_r/H) in [3, 5.5]`) -- qualitatively the expected `mu ~ mu_core + pi v^2 ln(...)` shape for a global string's long-range Goldstone tail, a much more physically sensible result than the old formula's monotonic ~300x decay to zero. Unit tests (39/39, `tests/`) unaffected (no test currently covers `AxionStringsLevel.cpp`'s tension block directly). |
-| **Spectrum physical-unit rescale (`k/H`, `v^-3 drho_a/dk`): re-derived from scratch and verified against the energy pipeline; the documented conventions.md formula is wrong** | Done, as an analysis-script step -- and a proposed conventions.md correction | Task 1.9's own status line above already flagged this rescale as not yet re-derived/verified -- correctly, as it turned out. First pass (2026-09-18) fixed only the *x*-axis: conventions.md sec.5's `L` (physical, `= R(tau)*L_tilde`) vs `L_tilde` (comoving) are distinct symbols, and an initial script used the comoving one in both the `k/H` and amplitude factors, putting every spectrum's peak 1-2 decades too high in `k/H`. That fix was necessary but not sufficient. **Second, more serious bug found 2026-09-19** while adding the `H f_a^2`-normalised version (user: "I'm not convinced by the normalisation... please check"): `MaskedFieldBuffer.hpp` fills the FFT buffer with `theta'` (`d(theta)/d(tau)`, comoving conformal-time phase rate, via `masked_a_dot`), *not* the physical axion time-derivative `a_dot = f_a*theta'/R` -- despite the code/diagnostics calling it "a_dot" throughout, which is a misnomer that obscured the gap. Converting `theta'` to `a_dot` needs an explicit `(f_a/R)^2` factor; conventions.md sec.10's documented rescale `(1/2pi) R L_tilde/N^6` has `R` to the wrong power (`+1`, not `-1`) and no `f_a` dependence at all -- confirmed genuinely wrong, not just unverified, via a direct numerical cross-check against the independently-validated `rho_axion_kinetic_screened` (`network_scalars.dat`): `integral(drho_a/dk) / (2*rho_axion_kinetic_screened)` drifted from `8.7` to `122` across a run using the documented formula (wrong, growing `R`-dependence), a clear signature of a missing/wrong power of `R`, not an accidentally-right constant. **Re-derived from scratch**, tracking the `4*pi*p^2` shell-binning convention (`SpectrumKernel.hpp`) through to a genuine `d^3k` integral, and using the already-established, already-trusted identity `Sum_s S(s) ~= inscribed_sphere_energy` (documented as an *approximate* cross-check, task 1.9's own entry above) as the anchor: `v^-3 drho_a/dk (p) = S(p) * f_a^2 * L_tilde / (2*pi*R*N^6)` (replacing the old `S(p)*(1/2pi)*R*L_tilde/N^6`). Verified: the same integral-vs-`rho_axion_kinetic_screened` ratio now sits at `1.00 +/- 0.02` for `log(m_r/H) >~ 4` on both the `N=256` fat and `N=384` physical runs, degrading only for the very first (transient, right-at-handoff) snapshot -- consistent with, not worse than, the pre-existing "approximate, not exact" caveat on the shell-binning identity itself. A useful side confirmation: dividing this corrected quantity by `H f_a^2` makes the `f_a^2` cancel analytically, exactly the expected/intended feature of that normalisation (removing the free `f_a` dependence to compare spectral *shape* across otherwise-unrelated axion-mass choices) -- the old, wrong formula did not have this property. **This fix lives only in the analysis script so far** (`axion_spectrum.dat`'s raw `p`/`shell_average_*` columns are unaffected and still correct -- only the downstream rescale was wrong), and **conventions.md sec.10's own rescale formula should be corrected** (a change to propose upstream, per CLAUDE.md, rather than silently diverging from it here). |
+| **Spectrum physical-unit rescale (`k/H`, `v^-3 drho_a/dk`): re-derived from scratch and verified against the energy pipeline; the documented conventions.md formula was wrong** | **Done -- and corrected upstream in conventions.md sec.10 (2026-09-19, with the user)**, with a dated note and decision-log entry (sec.14) | Task 1.9's own status line above already flagged this rescale as not yet re-derived/verified -- correctly, as it turned out. First pass (2026-09-18) fixed only the *x*-axis: conventions.md sec.5's `L` (physical, `= R(tau)*L_tilde`) vs `L_tilde` (comoving) are distinct symbols, and an initial script used the comoving one in both the `k/H` and amplitude factors, putting every spectrum's peak 1-2 decades too high in `k/H`. That fix was necessary but not sufficient. **Second, more serious bug found 2026-09-19** while adding the `H f_a^2`-normalised version (user: "I'm not convinced by the normalisation... please check"): `MaskedFieldBuffer.hpp` fills the FFT buffer with `theta'` (`d(theta)/d(tau)`, comoving conformal-time phase rate, via `masked_a_dot`), *not* the physical axion time-derivative `a_dot = f_a*theta'/R` -- despite the code/diagnostics calling it "a_dot" throughout, which is a misnomer that obscured the gap. Converting `theta'` to `a_dot` needs an explicit `(f_a/R)^2` factor; conventions.md sec.10's documented rescale `(1/2pi) R L_tilde/N^6` has `R` to the wrong power (`+1`, not `-1`) and no `f_a` dependence at all -- confirmed genuinely wrong, not just unverified, via a direct numerical cross-check against the independently-validated `rho_axion_kinetic_screened` (`network_scalars.dat`): `integral(drho_a/dk) / (2*rho_axion_kinetic_screened)` drifted from `8.7` to `122` across a run using the documented formula (wrong, growing `R`-dependence), a clear signature of a missing/wrong power of `R`, not an accidentally-right constant. **Re-derived from scratch**, tracking the `4*pi*p^2` shell-binning convention (`SpectrumKernel.hpp`) through to a genuine `d^3k` integral, and using the already-established, already-trusted identity `Sum_s S(s) ~= inscribed_sphere_energy` (documented as an *approximate* cross-check, task 1.9's own entry above) as the anchor: `v^-3 drho_a/dk (p) = S(p) * f_a^2 * L_tilde / (2*pi*R*N^6)` (replacing the old `S(p)*(1/2pi)*R*L_tilde/N^6`). Verified: the same integral-vs-`rho_axion_kinetic_screened` ratio now sits at `1.00 +/- 0.02` for `log(m_r/H) >~ 4` on both the `N=256` fat and `N=384` physical runs, degrading only for the very first (transient, right-at-handoff) snapshot -- consistent with, not worse than, the pre-existing "approximate, not exact" caveat on the shell-binning identity itself. A useful side confirmation: dividing this corrected quantity by `H f_a^2` makes the `f_a^2` cancel analytically, exactly the expected/intended feature of that normalisation (removing the free `f_a` dependence to compare spectral *shape* across otherwise-unrelated axion-mass choices) -- the old, wrong formula did not have this property. (`axion_spectrum.dat`'s raw `p`/`shell_average_*` columns were unaffected and still correct throughout -- only the downstream rescale was wrong.) **conventions.md sec.10 corrected accordingly** (2026-09-19, with the user's go-ahead to amend it directly): the amplitude factor now reads `f_a^2 L_tilde/(2*pi*R*N^6)`, with a dated note explaining the error and a decision-log entry (sec.14) -- this project's living document and this repo's own formula are no longer diverged. |
 | **Radial (Higgs) energy components: kinetic, gradient, mass** | **Done** | Task 1.8's own status line above flagged this decomposition as not yet implemented (conventions.md sec.12 names it but gives no psi/Pi formula). Requested and implemented 2026-09-18/19, with the user. `Energy.hpp` gains three new pointwise functions, defined analogously to the existing axion (phase-only) kinetic/gradient functions -- the exact physical energy of the `\|phi\|` amplitude degree of freedom alone, not "total minus axion" (which would also pull in cross/interaction terms conventions.md separately names and which were not requested). Derived and unit-tested as an *exact* orthogonal (radial/tangential) decomposition of the full kinetic and gradient energy -- not an approximation: `d\|phi\|/dt` and `grad\|phi\|` are the projections of `phi_dot`/`grad(phi)` onto `psi`'s own direction, with the orthogonal (tangential) projections reproducing `theta_prime`/`grad(theta)` exactly (the `(1/(b_inv tau))psi_i` terms cancel algebraically in the cross product) -- 5 new doctest cases in `tests/test_energy.cpp` check this decomposition reconstructs the independently-computed full kinetic/gradient energy to `1e-10`, for several non-vacuum `(psi,Pi)` configurations, plus the `psi=0` guarded-core case and the mass term's vacuum/off-vacuum values. `EnergyKernel.hpp`'s `TotalEnergyResult`/`compute_total_energy` extended to a 13-wide reduction (was 7) computing screened+unscreened radial kinetic/gradient/mass alongside the existing quantities (screened was the explicit ask; unscreened added for consistency with every other energy component already saved both ways). Wired into `network_scalars.dat` (6 new columns) and the per-snapshot `amrex::Print()`. Verified end to end on both the `N=256` fat-string and `N=384` physical-string screened runs below: radial kinetic and mass track each other closely (equipartition, as expected for an oscillating massive mode) with gradient somewhat lower, all three screened consistently below unscreened, no NaN/Inf. |
 | **Physical-unit plot normalisation: energies in `H^2 f_a^2`, spectrum in `H f_a^2`** | Done, as an analysis-script step | Requested 2026-09-19: the natural units for these observables are `H^2 f_a^2` (energies) and `H f_a^2` (`v^-3 drho_a/dk`), `f_a = sqrt(2) v = sqrt(2)` in code units. Implemented in the scratchpad plotting script (not the C++ output -- consistent with the project's existing "save raw components, rescale downstream" pattern already used for `xi`/tension/spectrum): each energy/spectrum figure is now produced twice, raw and rescaled. Tension is *not* rescaled by these units -- it has different dimensions (`v^2`/mass^2, vs. `H^2 f_a^2`'s mass^4) so the requested rescale does not apply to it. Implementing the spectrum's `H f_a^2` version is what surfaced the pre-existing `drho_a/dk` unit bug documented in the row above -- the energy-side `H^2 f_a^2` normalisation had no such issue (it rescales `network_scalars.dat`'s already-correct, already-validated `rho_*` columns directly, nothing new to derive). |
 | **Reusable analysis setup + instantaneous emission spectrum F(k/H, m_r/H)** | **Done** | Requested 2026-09-19 ("all these types of plots are going to have to be made many times... let's have a nice setup") together with a request to plot Fleury & Moore 1806.04677's `F` (the shape of the axion emission spectrum at a single instant, sec.4.2.1 eq.33). New `AxionStrings/analysis/` (in-repo, not scratchpad): `axion_analysis.py` consolidates `Background(tau)`, named-column file loaders (`network_scalars.dat`'s column layout has already changed once this project; positional indexing was an accident waiting to happen), and the (2026-09-19-corrected) spectrum unit conversions into one place, plus a new `instantaneous_emission()`. **Derivation** (not spelled out in the paper -- done here to make the implementation checkable): substituting the comoving wavenumber `kappa = k*R(t)` into the paper's eq.(23) collapses its time-integral's dependence on the upper limit, giving `d/dt[R^3 drho_a/dk]|_kappa = (Gamma/H) R^3 F(k/H, m_r/H)` -- eq.(33), with the derivative taken **at fixed comoving mode index `p`** (`kappa = 2*pi*p/L_tilde`, `L_tilde` fixed per run), not at fixed physical `k` -- i.e. "redshift the earlier snapshot forward" *is* comparing the same `p` across both snapshots after `R^3`-weighting, not an interpolation in `k`. Normalises to `integral(F dx)=1` directly (mirroring the paper's own approach) rather than computing `Gamma(t)` independently (eq.17's general form is complicated; the normalisation-to-1 requirement sidesteps needing it, for `F`'s shape specifically). Cosmic-time `Delta t` (the finite difference is in `t`, not `tau`) uses a closed-form `t_cosmic(tau) = tau^(a_inv/b_inv)/a_inv`, verified against direct numerical quadrature of `R(tau)`. **Tested against an independent construction, not just self-consistency**: `test_axion_analysis.py` forward-integrates a *known* `F_test(x)` and constant `Gamma/H` through the defining eq.(23) integral (via `scipy.integrate.quad`, a completely separate code path) to synthesise `S(p)` at two close snapshots, then checks `instantaneous_emission` recovers `F_test` -- as a *convergence* check (error shrinks as `Delta log -> 0`, from `0.75` to `0.06` over a `10x` reduction), not a single-tolerance check, since a steep Gaussian test function's tails are expected to show a large but shrinking finite-difference smear even with a correct implementation (checked directly: this smearing is a real, expected numerical-differentiation artefact, not a bug -- confirmed by varying `Delta log` and watching the error track it). Verified end to end on both the `N=256` fat and `N=384` physical runs: fat-string `F` clearly shows the paper's IR peak at `k/H~5-15` and the different-time curves cluster together (scaling behaviour) for `log(m_r/H)>~4`, matching Figure 11's fat-string panel qualitatively; physical-string `F` is visibly noisier (`18%` of points have a negative raw derivative, vs `5%` for fat), matching the paper's own observation that the physical case is harder to extract cleanly. Negative-derivative points (1806.04677 sec.4.2.1: "subject to fluctuations at frequencies near the core") are flagged (dotted, de-emphasised) rather than silently dropped or trusted. Not yet done: fitting the power-law index `q` from `F` (paper's Appendix E) -- the `F` extraction itself was the immediate ask; fitting `q` is a natural next step using the same `instantaneous_emission()` output. **Follow-up (same day)**: the standard per-run plot set (`xi`, energies raw/normalised, tension, spectrum raw/normalised -- previously a one-off scratchpad script) was likewise consolidated into `AxionStrings/analysis/plot_run_summary.py`, built on the same `axion_analysis.py` utilities rather than its own copy of `Background(tau)`/unit conversions. Verified pixel-identical output (`max pixel diff = 0`) against the scratchpad script's already-validated plots on both the `N=256` fat and `N=384` physical runs before treating the scratchpad version as retired. |
@@ -60,8 +60,222 @@ readiness (multi-level restart, performance).
 | **0. AMR box planning** | **Done** | New `BoxPlan.hpp::compute_amr_box_plan(N_effective, N1, N2, a_inv, c, max_level)`. Conventions.md sec.5's own note -- "for AMR, N and N2 refer to the effective finest resolution, not the base grid" -- means the existing `compute_general_box_plan` already gives the right `L_tilde`/`tau_f`/`dx_finest` when called with `N=N_effective`; what's new is deriving the *base* (level 0) grid size (`N_effective/2^max_level`, with a `-1` sentinel -- not a silently-wrong truncated integer -- if not evenly divisible) and the **level-addition schedule**: the `log(m_r/H)` at which each level must come online so the current finest level's resolution never drops below the `N2` target. **Derivation** (worked out from scratch, then verified numerically against a direct simulation of the underlying power law before writing any C++): `N2` at fixed comoving spacing scales purely geometrically with level (`N2_level_ell = 2^ell * N2_level_0`, independent of `c` or how `m_r(tau)` itself evolves -- a consequence of `dx_ell = dx_0/2^ell` alone), while `N2_level_0(tau)` is a power law in `tau` set by `R(tau)*m_r(tau) = R0*tau^((1-c)/b_inv)`. Converting to `x = m_r/H` and combining, the level spacing works out to `Delta log(m_r/H) = ln(2)*(a_inv-c)/(1-c)` -- singular at `c=1` (fat), matching conventions.md's own observation that fat mode's comoving core width is exactly constant, so no further level is ever needed there; for `a_inv=2, c=0` this reduces to `ln(4) ~= 1.386`, exactly reproducing conventions.md sec.11's number (previously stated only for that specific case) and Buschmann et al.'s own empirical level-addition spacings (`2.6, 3.9, 5.3, 6.7`, differences `1.3-1.4`). Thresholds are counted backward from `tau_f` (where, by `compute_general_box_plan`'s own construction, `N2` is reached using *all* `max_level` levels), one level-spacing per level. **Tested against independent constructions, not just the formula restated**: (1) numerically verified the `Delta log` formula against a from-scratch simulation of `N2_0(tau)`'s power law before any C++ was written; (2) `tests/test_box_plan.cpp` checks `N_base`/`dx_base`/divisibility, that consecutive `log_add` thresholds are spaced by the derived `Delta log` (including a **non-`a_inv=2`** case, `a_inv=2.5`, to exercise the general formula rather than only its special case), that the finest level's own threshold sits exactly one spacing before `tau_f`'s `log(m_r/H)`, and -- the actual physically meaningful boundary condition, checked directly against `Background`, not against `compute_amr_box_plan`'s own formula (which would be circular) -- that the **base grid alone**, evaluated at `tau_from_log_mr_over_h(log_add[0])`, gives exactly `N2` in units the user chose: `N1`/`N2`/`max_level` as explicit inputs, `L_tilde`/`dx_base`/`N_base`/the level schedule all derived. 49/49 unit tests passing (3 new). **Wired up (same day)**: `apply_box_plan()` now branches on `amr.max_level` -- `>0` uses `compute_amr_box_plan`, injecting `amr.n_cell` from `N_base` (cross-checked, not overwritten, if already set -- same pattern as every other derived quantity here), `geometry.prob_extent` from `L_tilde`, `derived_tau_f`, and a new `axion_strings.derived_level_add_log_mr_over_h` array for Phase 1's tagger to consume later; `max_level==0` keeps the exact prior single-level behaviour. Added a guard: `moore_mode && max_level>0` now aborts with a clear message, since conventions.md sec.11 is explicit that Moore should stay single-level. **Smoke-tested with GRTeclyn's real AMR machinery running for the first time in this project** (`params_amr_smoke_test.txt`, `N=64` effective, `max_level=2`, using the *existing placeholder* `tag_cells()` since Phase 1 hasn't replaced it yet): startup printout matched hand computation exactly (`N_base=16`, `L_tilde=8`, level thresholds `1.386`/`2.773`); the run then genuinely regridded at `lbase=0` and `lbase=1`, advanced real level-1 and level-2 steps (correct `ref_ratio=2` subcycled `dt`), and exited clean with no NaN/Inf -- confirms the box-planning-derived grid/geometry are consumable by GRTeclyn's actual multi-level driver (quartic interpolation, composite FillPatch), not just internally self-consistent numbers. Phase 1 (replacing the placeholder tagger with the real plaquette-based criterion) is next. |
 | **1. Real (string-based) tagging** | **Done, with real findings flagged for follow-up** | New `StringTagger.hpp`, replacing `AxionStringsLevel::tag_cells()`'s geometric `FixedGridsTagger` placeholder entirely. **Primary criterion**: pierced plaquettes at the cell's low-index corner -- refactored `StringFinder.hpp` to expose the per-cell test (`plaquette_windings_at`) as a shared function first, so the tagger and the `xi` diagnostic call the *exact same* code (CLAUDE.md constraint 5), not a second hand-copied version that could silently drift. **Secondary criterion, implemented now rather than deferred** (per the user: "we might need to turn the gradient trigger on at some point, so it might be worth implementing this now"): Buschmann et al.'s `dx_ell^2|laplacian(psi_i)| > threshold` (their value 0.04), using the *same* low-level Laplacian access pattern already proven correct in `AxionStringsRHS`'s own EOM kernel, not a new one. New `axion_strings.tagging.gradient_threshold` (optional, `queryAdd` not `get`) defaults to `std::numeric_limits<double>::max()` -- genuinely off, not just "a large number that happens not to matter" -- so it can be switched on later (e.g. `= 0.04`) with no new code. Buffering (conventions.md sec.11: strings must stay a core width from any coarse-fine boundary between regrids) needed no new code either -- it is exactly AMReX's own `amr.n_error_buf`, already a project parameter, just previously always `1`. **Smoke-tested on real (not placeholder) refinement for the first time**, `N=128` effective/`max_level=2`/physical mode: first attempt used a raw, unrelaxed Fourier IC and found ~100% tagging at every level -- diagnosed as the IC's own deliberately-noisy lattice defects spuriously piercing nearly every plaquette (exactly the effect pre-evolution exists to remove, not a tagger bug), so redone with `ic_mode=fourier_relaxed`. Also found and fixed a smoke-test grid-configuration mistake, not a tagger bug: with `amr.max_grid_size` equal to the base grid's own size, level 0 is a single box, so *any* tagged cell forces refinement of the entire domain -- fixed by shrinking `max_grid_size` well below `N_base` so AMReX has room to make localised patches. **Critical gap found from the first smoke test, and fixed**: the findings below from that first pass (level 0->1 pinned near 100%; late-time runaway) turned out to trace back to `tag_cells()` never having consulted Phase 0's level-addition schedule at all -- it tagged unconditionally on the plaquette/gradient tests regardless of whether refinement was actually *due yet* at the current `log(m_r/H)`. Fixed by adding, at the top of `tag_cells()`: an early return during `Phase::Relaxing` (pre-evolution's `a_time` is `PreEvolutionBackground`'s own local clock, not `tau = s_tau_i + a_time`, so `log(m_r/H)` from the main `Background` would be meaningless there), then a check that `log(m_r/H)` at the *current level's* time has actually reached `s_level_add_log_mr_over_h[current_level]` (read back from Phase 0's `derived_level_add_log_mr_over_h` via `queryarr`) before permitting any tagging that would create the next level. **Gating verified at small scale first** (`params_tagger_smoke_test.txt`, `N_base=32`): a temporary debug print inside the gated branch, cross-checked against the log's own `"lbase = 1"` regrid trace lines, confirmed level 1 tagging starts at exactly `a_time=4.879` (`log(m_r/H)=2.192`, just past the `2.079` threshold) -- matching the hand-computed threshold almost exactly. (One methodology lesson from this check, worth remembering: AMReX's periodic `"Level N ... % of domain"` grid-summary print is not tied to every regrid event, so its absence between two log lines does not mean no refinement happened in between -- an apparent "level 1 not until step 186" discrepancy was purely this, not a bug, resolved by checking `"lbase = N"` trace lines instead.) **Then re-validated at the scale the user asked for** (`params_amr_validation_128.txt`: `N_base=128`, `max_level=2`, physical mode, `log_mr_over_h_i=2.0`): level 1 came online at `TIME=5.091` (`log(m_r/H)=3.477` vs. the predicted `3.466`, 0.3% off); level 2 at `TIME=10.748` (`log(m_r/H)=4.859` vs. predicted `4.852`, 0.15% off) -- confirming Phase 0's derivation and Phase 1's gating together, end-to-end, at a properly-resourced scale, and directly bearing out the user's own framing: "at the start of simulations no refinement is needed, but we should successively start refining more as log(m_r/H) increases." **A further, non-obvious finding from this run**: the *schedule* (which levels exist) increases monotonically as required, but the *refined fraction within an active level* does not -- level 1 covers 37% of its domain the moment it turns on and falls steadily to ~8% by `tau_f`, as the string network dilutes (`N_p_weighted` falls from ~22700 to ~420 over the run, per `network_scalars.dat`) and correspondingly fewer of the `blocking_factor=16` blocks get touched by a string. This is expected scaling-regime dilution, not a gating defect, and should not be conflated with the (correctly monotonic) level-addition schedule. Level-0-only `xi` (uncorrected for masking, since Phase 2's composite diagnostics don't exist yet) also stayed bounded this time (~0.44 rising to ~0.62, settling back to ~0.53) rather than diverging -- in contrast to the earlier `N_base=32` test, consistent with that earlier runaway having been a symptom of the missing gate plus an under-resourced base grid, both now addressed. One concrete cost data point: average evolution speed dropped from ~1520 to ~224 code units/h the step level 2 turned on. Gradient criterion still untouched by this validation (default off); a dedicated sensitivity study remains follow-up work, as does Phase 2 (composite, cross-level `xi`/energies with field-theoretic masking, needed to check `xi` properly rather than level-0-only). 49/49 unit tests still passing (unaffected -- verification here was by real multi-level runs). |
 | **2. Composite (cross-level) diagnostics** | **Done** | Until now, `specific_post_timestep()` computed `xi`/energies/velocities from `Level()==0`'s own data only -- once refinement existed (Phase 1), that data was simply *ignored*, not approximated: the interesting, string-dense refined region contributed nothing. Fixed by making all three reductions genuinely composite, using the *existing* field-based mask unchanged throughout (the user's "field-theoretic masking" choice from the planning discussion, as opposed to Buschmann et al.'s own choice of masking by finest-refinement-level -- a cell's mask weight still comes from its own field value, at whatever level it lives on, never from which level it happens to be). **Coverage**: a new `gather_composite_levels()` (`AxionStringsLevel.cpp`, anonymous namespace) walks `0..parent->finestLevel()`, building each level's own `amrex::iMultiFab` coverage mask via `amrex::makeFineMask` (1 = keep, 0 = covered by a finer level) so every physical point is counted exactly once, at whichever level actually covers it -- not zero times (the old behaviour) and not twice. **Ghost cells**: each level's diagnostic copy is filled via `amrex::AmrLevel::FillPatch` (genuine composite, quartic-interpolated across a coarse-fine boundary -- the same interpolation the evolution itself uses), not a plain `FillBoundary`, which only exchanges same-level/periodic neighbours and would leave cells right at a coarse-fine interface stale -- precisely the kind of resolution-correlated bias conventions.md sec.11 warns AMR can introduce if not handled carefully. **Combining levels correctly**: a coarser cell/plaquette/corner represents proportionally more comoving volume or string length than a finer one, so levels are combined weighted by `dx_level` (plaquette length, `StringFinder.hpp`'s `count_plaquettes`; velocity-corner length-average, `VelocityKernel.hpp`) or `dx_level^3` (energy volume, `EnergyKernel.hpp`'s new `compute_total_energy_sums`/`compute_composite_total_energy`) -- never by raw cell/corner *count*, which would silently overweight finer levels (more, smaller cells for the same physical region). `xi`'s own formula is exactly linear in comoving string length (`XiFormula.hpp`'s existing `(2/3) N_p dx` term), so summing lengths across levels first and converting once (new `xi_from_comoving_length`, with the old `xi_from_plaquette_count` now a thin single-level wrapper around it, unit-tested to be identical) is *exact*, not an approximation -- proved as its own doctest case (`test_xi_formula.cpp`), not just asserted. `TotalEnergyResult.n_total`/`n_unmasked` change *meaning* under this refactor, from a raw point count (valid only because every cell shared one `dx` pre-Phase-2) to a comoving *volume* (count times `dx^3`, summed across whichever levels contributed) -- single-level callers see the identical numeric value either way (`n_cells*dx^3` vs `n_cells`), so the downstream tension formula (`AxionStringsLevel.cpp`) was adjusted to stop applying its own separate `dx^3` (the product is unchanged, only how it is factored) rather than double-counting the volume. The spectrum stays deliberately level-0-only (established policy, conventions.md sec.11/task 1.9) -- its own real-space/Parseval cross-checks were still dividing by `energy.n_total`, which would have silently become the wrong (whole-hierarchy) denominator once Phase 2 landed, so this was repointed at a new, explicitly level-0-only `level0_n_cells` instead. **Verified**: 51/51 unit tests passing (2 new, both on `xi_from_comoving_length`'s exactness). Real multi-level runs (`params_phase2_smoke_test.txt`, a deliberately raw/unrelaxed Fourier IC chosen specifically to trigger refinement almost immediately, since correctness plumbing -- not physical realism -- was what needed exercising quickly) confirmed a strong, independent invariant at every snapshot, across 2-level and 3-level hierarchies alike, under both default (scheme A) and screened (scheme B) masking: composite `n_total` equals `L_tilde^3` to full double precision (`1448.154688`, matching `11.313708...^3` exactly) -- i.e. the coverage masks partition the whole comoving domain with no gaps and no double-counting. With scheme B enabled, `n_unmasked` correctly differs from `n_total` and evolves sensibly (grows as the network dilutes); tension stays finite and well-behaved across level transitions. Not yet done: a real (non-throwaway, physically relaxed) end-to-end re-validation of `xi`/tension against the earlier Phase 1 physical-mode run now that they are composite (the `params_amr_validation_128.txt` numbers quoted in Phase 1's own entry above predate this fix and are level-0-only); Phase 3 (spectrum on the hierarchy) is unaffected and still pending separately. |
+| **3. Spectrum on the hierarchy** | **Done** | The plan agreed when this milestone started ("average fine data down, FFT the coarse level only") is what this implements -- distinct from Phase 2, which is about *which cells contribute at all*; Phase 3 is about *what value* a level-0-resolution cell should hold once something finer exists above it. Confirmed first that this genuinely was still needed after Phase 2: nothing in this codebase's post-timestep flow keeps level 0's own stored state in sync with a finer level's more accurate solution in a refined region (grepped the AMR driver for an existing `average_down`/sync step -- none exists), so level 0's own data there is a real, independently-timestepped, *worse* solution, not a stale-but-equivalent one. New `collapse_to_level0()` (`AxionStringsLevel.cpp`, anonymous namespace, alongside `gather_composite_levels`) cascades `amrex::average_down` from the finest level down to level 0, one adjacent pair at a time (needed for `max_level=2`: level 2 into a working copy of level 1 first, *then* that corrected level 1 into level 0, not a single direct ratio-4 average, since level 1's own valid data in a level-2-covered cell is itself superseded and must be corrected first). Verified from AMReX's own `average_down` implementation, not assumed, that it only overwrites the *covered* subset of the destination (an internal `ParallelCopy` from a temporary matching just the fine footprint) -- so starting from a copy of `gather_composite_levels`'s own per-level state and cascading downward leaves every uncovered cell exactly as it already was, and only touches what actually has better data available. The result feeds the *existing*, otherwise-unchanged single-level spectrum pipeline (`fill_masked_a_dot_buffer` + `compute_spectrum`) -- masking still happens at exactly one place (CLAUDE.md constraint 5), only the field it operates on has changed. `energy.n_total`/`level0_n_cells` normalisation (already split apart in Phase 2, since energy's own `n_total` became a whole-hierarchy volume) needed no further change -- the spectrum's own point count is still level 0's, just better-informed data at each of those points now. **Verified**: 51/51 unit tests unaffected (this is pure AMReX-hierarchy plumbing, no standalone-testable math changed). A temporary debug comparison (`amrex::MultiFab::Dot`, removed after use) against a real 3-level run confirmed both halves of the expected signature: at `finest_level=0` the corrected and raw fields are *bit-identical* (`collapse_to_level0` is a true no-op with one level -- zero regression risk for every existing single-level physical/fat/Moore validation), and once levels 1/2 come online the corrected field's sum-of-squares is consistently *smaller* than the raw level-0-only field's (`|corrected|^2 < |raw|^2` at every checked snapshot) -- exactly the sign expected of a genuine averaging-down (a plain mean reduces variance; Jensen's inequality), not a no-op or a sign error. Real multi-level runs with `compute_spectrum=1` (screened, scheme B, and unscreened side by side) completed cleanly through a 3-level hierarchy with no NaN/Inf in any reported spectrum quantity (one *expected*, unrelated `0/0 = nan` in a log-only cosmetic ratio was traced to a fully-masked buffer at a very early, single-level snapshot -- reproduces identically with or without this change, not a Phase 3 artifact). Not yet done: comparing an actual measured spectral shape/`q` before and after this fix on a real (non-throwaway) physical-mode run, to quantify how much the pre-Phase-3 level-0-only spectrum was actually biased in practice. |
 
 ## Known issues / open questions
+
+- **Open, investigated (2026-09-19, with the user: "genuinely investigate
+  and worry about... before proceeding"): a coarser base grid
+  (`dx_base ~ 0.25`) makes the plaquette tagger fire on ~100% of the domain
+  at level 1's very first onset, instead of the ~25-40% seen at
+  `dx_base <= 0.177` (Phase 1's own validated runs).** First hit trying
+  `max_level=3` at `N_base=128` (`params_full_test_1024.txt`) to extend
+  Milestone 2's dynamic range beyond the validated `max_level=2` depth --
+  `L_tilde`/`tau_f` scale as `sqrt(N_effective)` (`compute_general_box_
+  plan`), not independently of it, so extending the hierarchy at fixed
+  `N_base` necessarily coarsens `dx_base`. Five controlled tests, each
+  changing exactly one variable, to isolate the cause:
+  1. **Hierarchy depth ruled out.** Reproduced the identical ~100% tagging
+     at `max_level=2` (not 3) by matching `params_full_test_1024.txt`'s
+     `(dx_base, level-1 threshold)` exactly (`N_base=64`, `N_effective=
+     256`, same `log_mr_over_h_i=2.0`) -- both give `level-1 threshold =
+     ln(N_base) - max_level*ln(2) = 4*ln(2) = 2.773` by construction, and
+     both showed 100%. Not a depth-3-specific bug.
+  2. **Schedule-derived resolution margin: matters, but not sufficient.**
+     The margin between `log_mr_over_h_i` and level 1's own threshold sets
+     `N2_0(tau_i)` -- the base grid's points-per-core-width at the moment
+     of handoff, `N2_0(tau) = 1/(dx_base * tau)` for `a_inv=2,c=0` (a clean
+     closed form, cross-checked against the schedule's own power-law
+     derivation and found identical). Raising `N2_0(tau_i)` from 1.47 to
+     2.43 (lowering `log_mr_over_h_i` to 1.0, same `dx_base=0.25`) only
+     partially helped: 100% -> 74%, still far from healthy.
+  3. **Margin alone does not predict this.** A genuinely healthy run
+     (`N_base=160`, `dx_base=0.158`, `N2_0(tau_i)=2.33`) and test 2's
+     `N2_0(tau_i)=2.43` (marginally *better*) gave wildly different
+     outcomes (~27% vs 74%) despite near-identical schedule-derived
+     margins -- ruling out `N2_0(tau_i)` as a sufficient predictor on its
+     own, whatever role it plays.
+  4. **`pre_evolution.gamma`'s absolute value ruled out.** `gamma_pre` sets
+     the fat-mode relaxation's own `m_r/H` -- with no explicit dissipation
+     in this code (`sigma=0` by default, CLAUDE.md constraint 1), a lower
+     `gamma_pre` means fewer oscillation cycles per Hubble time and weaker
+     Hubble-friction damping of non-string defects, a plausible independent
+     mechanism. Tested by decoupling `gamma_pre` from `dx_base`: held
+     `dx_base=0.25` fixed, raised `gamma_pre` to 6.0 (matching validated
+     runs) while lowering `k_max_over_mr` to 42.667 to hold the Fourier
+     IC's own bandwidth (`k_max_cells = k_max_over_mr * gamma_pre *
+     dx_base`) fixed at 64 -- isolating gamma_pre's dynamical role from any
+     change in injected-noise bandwidth. Still ~100%. Ruled out as the sole
+     cause.
+  5. **A unit mismatch via `pre_evolution_L_tilde` ruled out.** That sec.7
+     formula (a *different*, generally larger comoving box for the
+     relaxation phase) is confirmed unused in this code path -- read the
+     source directly: `apply_box_plan` computes it and prints it
+     explicitly labelled "FYI only... NOT used", since pre-evolution and
+     the main run share one live grid (`Geom()`) rather than communicating
+     through a checkpoint. Not the mechanism.
+  **Left standing**: the one factor common to every failing configuration
+  and absent from every healthy one, across all five tests, is `dx_base`
+  itself -- every failure used `dx_base=0.25`; every success used
+  `dx_base <= 0.177`. Leading untested hypothesis: a coarser `dx_base`
+  changes the *relative* numerical weight of the gradient-energy term
+  (`~1/dx^2` via `FourthOrderDerivatives`) against the (`dx`-independent)
+  mass term in the relaxation EOM, changing how the *same* initial noise
+  pattern (confirmed statistically identical in grid-index space between
+  the `max_level=2` and `max_level=3` `N_base=128` cases -- same seed, same
+  `N_base`, same `k_max_cells`) evolves during relaxation. Not yet
+  confirmed. Also worth weighing: `N2=1` is already flagged elsewhere in
+  this document (Phase 1 entry) as "the project's established
+  aggressive-minimum convention" -- `dx_base=0.25` may simply be the first
+  configuration to fall on the wrong side of a margin that was already
+  known to be thin. **Practical guidance until resolved**: treat
+  `dx_base >~ 0.2` as suspect; the two genuinely validated configurations
+  both used `dx_base <= 0.177`. Full test files and reasoning kept in
+  `params_full_test_1024.txt`'s own header comment.
+
+  **Follow-up (2026-09-19, same day, prompted by the user: "could a
+  stronger cut on the max initial k improve the situation?")** -- yes,
+  substantially, though the mechanism turned out more subtle than "less
+  initial noise." A fine-grained trace (`axion_strings.pre_evolution.
+  check_interval_coarse=1`, checking every step instead of the default
+  50-step cadence) of the failing `dx_base=0.25`, `k_max_over_mr=64`
+  config showed relaxation starting at `xi ~ 14-18` (`N_p ~ 1.5` million
+  pierced plaquettes out of 2.1 million cells -- i.e. `k_max_over_mr=64`
+  saturates the `N_base=128` Fourier grid's own Nyquist limit, `N_base/2
+  =64` in FFT-index units, populating essentially every representable
+  mode) and undergoing a genuine, real ~50x collapse in `N_p` over ~50
+  light-crossing times before crossing the target -- not an artificially
+  truncated relaxation as first suspected (the cadence-tightening logic,
+  `AxionStringsLevel.cpp`'s `s_xi_check_interval` schedule, checked out
+  correctly; the default 50-step cadence was just too coarse to *see* the
+  trajectory, not too coarse to *let it happen*).
+  Lowering `k_max_over_mr` while holding everything else fixed
+  (`N_base=128`, `max_level=3`, `dx_base=0.25`, `log_mr_over_h_i=2.0`):
+  `64 -> 100%` tagged at level-1 onset; `16 -> 91%`, declining slowly;
+  `4 -> 47%`, declining to `35%` within the same window (comparable to the
+  genuinely validated configs' ~25-40%); `0.5 -> N_p=0` at the very first
+  check -- **no strings ever formed at all** (too little power to trigger
+  the Kibble mechanism), confirming a real floor below which this knob
+  cannot be pushed. So there is a working window, and the user's physical
+  intuition ("no structure below the string core scale, `k <~ few * m_r`")
+  is directionally right and empirically confirmed as the single most
+  effective lever found in this investigation.
+  What it is *not*, however, is simply "less initial mess": a matching
+  fine-grained trace of the genuinely healthy `N_base=160` config (`dx_base
+  =0.158`, same `k_max_over_mr=64`) started at `xi ~ 25-33` -- *higher*
+  than the failing config's ~14-18 -- yet still relaxed to a clean, ~27%-
+  tagged handoff. Both configurations start from an extremely dense,
+  double-digit-`xi` tangle; only one collapses cleanly. This is consistent
+  with (not yet proof of) the standing `dx_base`-dependent-EOM hypothesis
+  above: a large `xi` built from *coherent*, large-scale windings (more of
+  which populate at a properly band-limited `k_max_cells` relative to that
+  grid's own Nyquist -- `N_base=160`'s `k_max_cells=64` is a real,
+  enforced cutoff at 80% of Nyquist; `N_base=128`'s is not a cutoff at all,
+  since it coincides with Nyquist exactly) collapses via genuine loop
+  annihilation, while a large `xi` with a substantial *incoherent*,
+  lattice-noise admixture (from populating literally every representable
+  mode) may not collapse the same way even once the raw plaquette count
+  crosses the target -- consistent with lower `k_max_over_mr` helping by
+  removing exactly that admixture, independent of the starting `xi` value
+  itself. Not fully proven; would need direct inspection of the field's
+  own spectral content pre- and post-relaxation to confirm.
+  **Updated practical guidance**: prefer `k_max_over_mr` a handful of
+  units at most (this session's tests bracket a working window around
+  `2-8`, not yet narrowed further), and treat `k_max_over_mr` approaching
+  or exceeding `N_base/2` (the Fourier IC grid's own Nyquist limit) as a
+  second, independent red flag alongside `dx_base >~ 0.2` above.
+
+  **Second follow-up, same day: does refinement fire prematurely, before
+  the schedule says it should (the user: "the main run starts at an
+  m_r/H such that refinement probably isn't needed")?** Checked directly
+  rather than inferred: `grid_places()`'s own `new finest: 0` prints
+  persist through every regrid check (`amr.regrid_int=2`, so every 2
+  steps) both through all of relaxation *and* for ~26 steps after
+  handoff -- level 1 is not created until `log(m_r/H) ~ 2.78`, matching
+  the analytic threshold (`2.773`) almost exactly. **The schedule-gating
+  is not the bug and is not firing early.** But `log_mr_over_h_i=2.0`
+  sits only `Delta_log=0.773` below that threshold (`tau_i=2.718` vs.
+  `Delta_tau~1.3` to cross it) -- refinement becomes due very early in
+  the run's own life, not after a long, gentle settling period, so
+  whatever quality problem the field has gets exposed almost immediately.
+
+  **Third follow-up, same day: does widening that margin (a *larger*
+  `log_mr_over_h_i`, shrinking the time spent evolving un-refined on an
+  increasingly under-resolved coarse grid, `N2_0(tau) = 1/(dx_base*tau)`
+  decreasing monotonically) help, tested alongside a smaller
+  `k_max_over_mr`?** Tested `k_max_over_mr=8` (between the previously-
+  bracketed 4 and 16) and `log_mr_over_h_i=2.5` (margin 0.773 -> 0.273),
+  both together and in isolation, same `N_base=128/max_level=3/dx_base
+  =0.25` box throughout:
+  - `k_max_over_mr=8` alone (`log_i=2.0` unchanged): 87% at onset,
+    declining only to 70% within the test window -- a much steeper
+    falloff between `k_max_over_mr=4` (47%->35%, healthy) and `=8` than
+    between `8` and `16` (87% vs 91%). The earlier "working window of
+    2-8" was too generous; the real transition sits close to 4.
+  - `log_mr_over_h_i=2.5` alone (`k_max_over_mr=64` unchanged): 100%,
+    persistently, across 9 consecutive regrid checks -- *not even
+    beginning to decline*, arguably worse than the original `log_i=2.0`
+    baseline (which did eventually start declining slowly).
+  - Both together (`k_max_over_mr=8`, `log_i=2.5`): 100%, persistently.
+  **Conclusion: raising `log_mr_over_h_i` does not help, and the evidence
+  points the other way.** `N2_0(tau_i)` is a direct, monotonically
+  *decreasing* function of `tau_i` alone (`=1/(dx_base*tau_i)`) --
+  raising `log_i` unavoidably starts the main run at an already-worse
+  absolute resolution (`N2_0(tau_i)=1.146` at `log_i=2.5` vs. `1.471` at
+  `log_i=2.0`), and this appears to dominate over any benefit from
+  spending less time exposed to further coarse-grid aging before
+  refinement rescues it. The "two competing effects" framing from the
+  previous discussion was itself the error: there is no real settling
+  benefit to trade against, since this code has no dissipation
+  (`sigma=0`) for "ordinary evolution" to lean on in the first place --
+  only the resolution-degradation effect is real, and it argues for the
+  *opposite* of a larger `log_mr_over_h_i`.
+  **Revised guidance**: don't touch `log_mr_over_h_i` as a lever for this
+  problem -- keep it set by the physics question being asked, not by
+  this investigation. Narrow the `k_max_over_mr` search below 8, closer
+  to (but confirmed above) the 4 value that worked; 4-5 is the best
+  currently-known value for this box configuration, not the wider "2-8"
+  bracket stated above.
+
+  **Correction from the user, same day**: a larger `log_mr_over_h_i` may
+  in fact be *better*, not worse -- at later times there are fewer total
+  strings (network dilution), so more physical relaxation toward the
+  attractor has already happened by handoff, which can outweigh the
+  naive `N2_0(tau)` resolution-margin argument above. More fundamentally:
+  this project cares about *late-time*, near-attractor behavior, not
+  precise control of IC-generation nuisance parameters -- moderate
+  variation in exactly how the initial tangle is generated is acceptable
+  as long as the handed-off state starts close to the scaling attractor.
+  This investigation is left here at a practically-adopted value
+  (`k_max_over_mr ~ 4-5`) rather than further chased to a fully-resolved
+  first-principles mechanism, consistent with that philosophy -- not
+  because the remaining questions (why `dx_base` and `log_mr_over_h_i`
+  affect things the way they empirically did here) are uninteresting, but
+  because pinning them down further is not needed to proceed.
+
+- **Tried and rejected (2026-09-19, with the user): a physically-derived
+  default for `StringTagger`'s radial-gradient criterion (`axion_strings.
+  tagging.radial_gradient_threshold`), calibrated from an isolated static
+  string's own peak core gradient tied to the box-planning `N2` target
+  (full derivation in `AxionStringsParams.hpp`'s `read_tagging_params()`
+  comment), also produces ~100% tagging at level 1's first onset** -- a
+  distinct mechanism from the `dx_base`-dependent plaquette-tagger issue
+  just above (this hit `params_amr_validation_128.txt`, `N_base=128`,
+  `dx_base=0.17678`, one of the *validated-healthy* configurations for the
+  plaquette criterion alone, ~37% at onset there). Level 1 came online at
+  exactly the predicted `TIME=5.091` (the log(m_r/H) *schedule-gating*
+  itself is unaffected, as intended -- this criterion only changes which
+  cells get tagged once a level is already due), but with this derived
+  threshold active it tagged the *entire* domain immediately. Conclusion:
+  a single isolated static core's peak gradient does not describe the
+  ambient radial-mode gradient level in a real, dense Fourier-relaxed
+  tangle -- the two are evidently comparable almost everywhere, not just
+  at cores. Reverted to off by default (same convention as the existing
+  `gradient_threshold`/Buschmann-Laplacian criterion), available as an
+  explicit opt-in for anyone who wants to revisit the calibration --
+  treat this finding as the starting point, not a reason to re-derive
+  from scratch. The plaquette criterion remains the network schedule's
+  only currently-tagging-by-default criterion.
 
 - **Resolved (2026-09-17, with the user): `rho_tot`'s normalisation
   (task 1.8).** Conventions.md sec.10's formula, read literally, has the
@@ -183,11 +397,22 @@ readiness (multi-level restart, performance).
   singular at `c = a_inv`). A production fat->Moore run currently needs
   `geometry.prob_extent`/`evolution.stop_time` set by hand.
 
-- Moore's trick needs an extra `H0^-2` factor in the xi formula (conventions.md
-  sec.8, "source document eq. 84") that `XiFormula.hpp`/`StringFinder.hpp`
-  don't yet implement -- not needed for the single-level, non-Moore T1
-  validation done so far, but must be added before xi is trusted for a
-  Moore-mode run.
+- **Resolved (2026-09-19, with the user): the supposed Moore-mode `H0^-2` xi
+  factor does not apply and was a documentation error.** Previously flagged
+  here as "must be added before xi is trusted for a Moore-mode run." Queried
+  by the user ("the definition of xi is straightforward... could there just
+  be a mistake in the documentation?") and checked against first principles:
+  `R(tau)` (hence `t(tau)`) is independent of the `c(tau)` schedule entirely
+  (only `lambda(tau)` depends on `c` -- the same identity the Moore
+  box-planning/switch work already relies on), and `XiFormula.hpp`'s formula
+  is built entirely from `R(tau)`/`t(tau)` and lattice quantities, so it
+  already gives the correct physical xi in Moore mode unmodified -- there is
+  no physical mechanism for a Moore-specific correction. The user then
+  checked the actual source document directly and confirmed the cited factor
+  ("source document eq. 84") is outdated and does not apply here.
+  `conventions.md` sec.8 corrected accordingly (with a dated note and a
+  decision-log entry, sec.14) -- no code change needed, since `XiFormula.hpp`
+  never implemented the (spurious) factor in the first place.
 
 - **Decision (2026-09-17, discussed with the user): pre-evolution uses the
   same `geometry.prob_extent`/`amr.n_cell` as the main run, not
@@ -254,3 +479,59 @@ readiness (multi-level restart, performance).
   can be reused unchanged for pre-evolution -- only a new
   `PreEvolutionBackground` (same 3-quantity interface as `Background`) is
   needed. Not yet implemented pending confirmation this derivation is right.
+
+- **Open, parked (2026-09-19, with the user): both flat-space loop ICs
+  (`circular_loop` and `four_string_collision`) have a hard periodic-
+  boundary phase discontinuity, a recurrence of the `straight_string_test`
+  periodicity bug in a new context where it actually matters.** Found
+  while investigating why both ICs' `N_p`/`string_length` (in the new
+  `loop_scalars.dat` diagnostics) collapse to exactly 0 for a stretch of
+  several light-crossing times before either intended collision/collapse
+  physics has had time to occur, then (for `circular_loop`) partially
+  recover. Confirmed by direct evaluation of each IC formula at a periodic
+  seam (not just by inspecting the evolved run): for `four_string_collision`,
+  `psi2` at `y=-10` vs. the periodically-identical `y=+10` differs by
+  `~1.85` against a full amplitude of `~0.92` (essentially a full sign
+  flip); for `circular_loop`, `psi2` at `z=-8` vs. `z=+8` differs by
+  `~1.97` against amplitude `~0.98`, deep in the "vacuum" region far from
+  the ring. Mechanism in both cases: a winding angle computed as
+  `atan2(u, w)` from a *raw, unwrapped* coordinate `u` (respectively
+  `gamma*(y +/- approach)` and `z`) that saturates to `+/-pi/2` for large
+  `|u|` -- the two periodic images of the same point land on opposite
+  sides of that sign-dependent saturation, so the phase (not just a small
+  amplitude tail) jumps by order 1 exactly at the seam. Visually confirmed
+  too: projections/slices of `rho_tot` show a bright artifact band at the
+  affected boundary already at `t=0` (before any evolution), which then
+  grows and radiates inward over a few light-crossing times, visibly
+  smearing the intended string cores together well before `N_p` hits 0 --
+  i.e. genuine numerical destruction of the winding, not a plaquette-
+  detector/resolution artifact (the user's first hypothesis, checked and
+  ruled out this way).
+  **`circular_loop`'s own in-code comment, which claimed this construction
+  was exempt ("not the straight_string_test's own periodicity bug... this
+  is a smooth, quantitatively small amplitude residual"), was wrong** --
+  written without checking, corrected once actually verified numerically.
+  Both loop ICs share the same underlying issue as `straight_string_test`
+  (`docs/STATUS.md`'s and the project memory's existing entry on that),
+  but the earlier "live with it" decision for that case relied on real
+  network ICs coming from `FourierIC` instead -- an escape that does not
+  apply here, since the loop-collision/collapse study *is* built entirely
+  from this class of closed-form construction.
+  Real fixes considered but not yet chosen (**deliberately parked, not
+  decided**): (1) a short damped relaxation pass before the real, measured
+  evolution starts, reusing the existing `Phase::Relaxing` machinery and
+  consistent with the project's own IC-precision philosophy (exact IC
+  generation doesn't need to be right, only late-time/attractor behaviour
+  does); (2) push the pair/ring further from the affected periodic
+  boundary and explicitly quantify the residual -- known from the
+  `straight_string_test` investigation to shrink the *local* artifact but
+  not the *total* spurious energy, which plateaus at a floor rather than
+  vanishing, so on its own this is not rigorous for anything needing
+  quantitative energy/tension precision, only qualitative dynamics; (3) an
+  exactly periodic closed-form construction (elliptic/theta-function-based
+  multi-vortex solution) -- rigorous but a substantially bigger
+  implementation effort. **Do not trust any energy/tension number, or
+  fine dynamical detail, from either loop IC until this is resolved**;
+  qualitative large-scale behaviour away from the affected boundary (e.g.
+  `circular_loop`'s initial collapse trend) is less affected but still not
+  fully quantified.

@@ -4,6 +4,7 @@
 #include "AxionStringsParams.hpp"
 #include "Background.hpp"
 #include "DefaultLevelBld.hpp"
+#include "FlatBackground.hpp"
 #include "GRAmrLevel.hpp"
 #include "Masking.hpp"
 #include "PreEvolutionBackground.hpp"
@@ -88,6 +89,23 @@ class AxionStringsLevel : public GRAmrLevel
     inline static std::vector<double> s_level_add_log_mr_over_h{};
     inline static bool s_has_level_schedule{false};
 
+    // Flat-space (no cosmological expansion) loop simulations (2026-09-19,
+    // with the user). When true, specific_eval_rhs/specific_post_timestep
+    // use s_flat_background (R=1, curvature=0) instead of s_background/
+    // s_pre_background -- box planning, the log(m_r/H) output cadence and
+    // the AMR level schedule all assume an expanding background and
+    // simply do not apply: apply_box_plan() is never invoked for a
+    // flat-space run, so s_has_level_schedule/s_has_tau_f stay false, and
+    // tag_cells()/okToContinue() already handle that case unconditionally
+    // (tag on the StringTagger criteria alone; stop via evolution.
+    // stop_time/max_steps set by hand) with no further changes needed.
+    // Output cadence instead uses a fixed step count (s_flat_output_
+    // cadence_steps), since there is no log(m_r/H) to trigger on.
+    inline static bool s_flat_space{false};
+    inline static FlatBackground s_flat_background{};
+    inline static long s_flat_output_cadence_steps{10};
+    inline static long s_steps_since_flat_output{0};
+
     // Relaxation phase only (conventions.md sec.7).
     inline static PreEvolutionBackground s_pre_background{};
     inline static double s_xi_target{0.0};
@@ -101,6 +119,7 @@ class AxionStringsLevel : public GRAmrLevel
     inline static bool s_wrote_network_scalars_header{false};
     inline static bool s_wrote_spectrum_header{false};
     inline static bool s_wrote_projection_header{false};
+    inline static bool s_wrote_loop_scalars_header{false};
 
     // Screening used for the energy diagnostics (task 1.8) -- a runtime
     // parameter, never a compile-time constant (CLAUDE.md constraint 4).

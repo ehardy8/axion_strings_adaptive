@@ -58,7 +58,7 @@ struct Projection
 [[nodiscard]] inline Projection
 compute_energy_projection(const amrex::MultiFab &state, amrex::Real dx,
                           amrex::Real R, amrex::Real lambda,
-                          amrex::Real b_inv, amrex::Real tau,
+                          amrex::Real R_prime_over_R,
                           const amrex::Box &domain)
 {
     const auto lo = domain.smallEnd();
@@ -111,7 +111,7 @@ compute_energy_projection(const amrex::MultiFab &state, amrex::Real dx,
 
                     const double rho = rho_tot_pointwise(
                         psi1, psi2, Pi1, Pi2, grad_psi1_sq, grad_psi2_sq, R,
-                        lambda, b_inv, tau);
+                        lambda, R_prime_over_R);
 
                     const std::size_t idx =
                         static_cast<std::size_t>(i - lo[0]) *

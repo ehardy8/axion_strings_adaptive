@@ -1,0 +1,34 @@
+# Flat-space four-string-collision smoke test (2026-09-19, with the user).
+# First attempt -- checking basic sanity (no crash, no NaN, plausible
+# initial N_p/energy, stable short-time evolution) rather than the full
+# collision/reconnection dynamics (which needs to run to t ~ approach/v,
+# longer than this quick check).
+#
+# Box: L=20 (center at 10,10,10), N=80 -> dx=0.25 (m_r=1, ~4 pts/core).
+# sep=3 (rectangle side 6), approach=6 (pairs start 12 apart in y,
+# meeting at t=approach/v=20), v=0.3.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = 20
+amr.max_level = 0
+amr.n_cell = 80 80 80
+amr.max_grid_size   = 16
+amr.blocking_factor = 16
+
+geometry.is_periodic = 1 1 1
+geometry.prob_extent = 20.0 20.0 20.0
+geometry.center  = 10.0 10.0 10.0
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = 150
+evolution.stop_time = -1
+
+axion_strings.flat_space = 1
+axion_strings.flat.m_r = 1.0
+axion_strings.flat.output_cadence_steps = 10
+
+axion_strings.ic_mode = four_string_collision
+axion_strings.collision_separation_over_mr = 3.0
+axion_strings.collision_velocity = 0.3
+axion_strings.collision_initial_approach_over_mr = 6.0

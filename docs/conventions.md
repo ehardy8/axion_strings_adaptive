@@ -338,8 +338,15 @@ the community standard — Buschmann et al. adopt it as their primary AMR taggin
 ξ = (2/3) N_p (δx / L̃³) v² ((a_inv − 1)³/a_inv²) (τ/τ₀)²
 ```
 
-The `2/3` corrects for random orientation of string relative to the lattice. For Moore's trick
-there is an extra factor of `H₀^(−2)` (source document eq. 84).
+The `2/3` corrects for random orientation of string relative to the lattice.
+
+> **Correction, 2026-09-19.** A previous version of this section claimed an extra factor of
+> `H₀^(−2)` for Moore's trick (source document eq. 84). Checked against the source directly:
+> that factor is outdated and does not apply here. `R(τ)` — and hence `t(τ)` — is independent
+> of the `c(τ)` schedule entirely (only `λ(τ)` depends on `c`; see §4/§11's `H(τ) = R′(τ)/R(τ)²`
+> identity), so the `ξ` formula above, built entirely from `R(τ)`/`t(τ)` and lattice quantities,
+> already gives the correct physical `ξ` in Moore mode with no modification. See the decision
+> log's Corrections subsection (§14).
 
 The same expression inverted gives the number of plaquettes that must be pierced to reach a
 target `ξ_i` when setting initial conditions.
@@ -432,10 +439,25 @@ From the discrete transform, `getSpectrum` returns `(p, 4π ⟨|p|² |X_p|²⟩)
 with `|p|` within ±0.5 of `p`. To obtain `(k/H, v⁻³ ∂ρ_a/∂k)` rescale by
 
 ```
-( 2π/(L H) ,  (1/2π) R L̃ / N⁶ )
+( 2π/(L H) ,  f_a² L̃ / (2π R N⁶) )
 ```
 
-from `∂ρ/∂k = (2L/N⁶) ⟨p² |X̃_p|²⟩`.
+with `L = R L̃` the *physical* box length (as used throughout this section; do not substitute
+the comoving `L̃` here, including in the `k/H` factor).
+
+> **Correction, 2026-09-19.** The amplitude factor above previously read `(1/2π) R L̃/N⁶` — `R`
+> to the wrong power (`+1`, not `−1`) and missing the `f_a²` dependence entirely. Found while
+> implementing the `H f_a²`-normalised spectrum plot and confirmed genuinely wrong (not just
+> unverified) via a direct numerical cross-check against the independently-validated
+> `ρ_axion,kin,screened`: `∫(∂ρ_a/∂k) dk / (2 ρ_axion,kin,screened)` should equal 1 by
+> construction (the cross-check two paragraphs below), but drifted from `8.7` to `122` over a
+> run using the old formula — the growing, wrong-sign `R`-dependence is the signature. Root
+> cause: `ȧ` written to the FFT buffer is actually `θ′` (comoving conformal-time phase rate),
+> not the physical axion time-derivative `ȧ = f_a θ′/R` the rest of this section's formulas
+> assume — converting between the two needs the missing `(f_a/R)²`. Re-derived from scratch,
+> tracking the `4π p²` shell-binning convention through to a genuine `d³k` integral; verified to
+> `1.00 ± 0.02` against the cross-check for `log(m_r/H) ≳ 4` on multiple runs. See the decision
+> log's Corrections subsection (§14).
 
 **Cross-check to implement:** `ρ_a,kin` computed as `⟨½ȧ²⟩` over lattice sites must agree with
 `(1/2N⁶) Σ |ã̇(p)|²`. Cheap, and catches normalisation errors immediately.
@@ -776,3 +798,16 @@ Dated record of settled decisions and their reasons. Append; do not rewrite.
   screening mask was wrong. For any time-independent `φ`, the masked `ȧ` vanishes identically,
   so a static configuration is blind to that failure mode. A boosted string or a direct
   array-level unit test is required instead (§13, T2).
+- **2026-09-19.** §8's claim that Moore's trick needs an extra `H₀^(−2)` factor in the `ξ`
+  formula (source document eq. 84) is outdated and does not apply to this project — confirmed
+  against the source directly. `R(τ)` (hence `t(τ)`) is independent of the `c(τ)` schedule
+  entirely, so the existing `ξ` formula already holds unmodified in Moore mode. Raised by the
+  user questioning why a purely geometric/kinematic definition like `ξ` would need a
+  Moore-specific correction at all — a useful reminder that a citation to an external source
+  does not exempt a formula from a physical-consistency check.
+- **2026-09-19.** §10's `(k/H, v⁻³ ∂ρ_a/∂k)` rescale had a wrong amplitude factor:
+  `(1/2π) R L̃/N⁶`, with `R` to the wrong power and no `f_a²` dependence, should be
+  `f_a² L̃/(2π R N⁶)`. Root cause: the FFT buffer holds `θ′` (comoving phase rate), not the
+  physical `ȧ = f_a θ′/R` this section's formulas assume. Confirmed genuinely wrong, not just
+  unverified, via the §10 cross-check itself (the integral-vs-`ρ_axion,kin` ratio drifted with
+  `R(τ)` instead of sitting at 1). Re-derived and verified to `±2%` against that cross-check.

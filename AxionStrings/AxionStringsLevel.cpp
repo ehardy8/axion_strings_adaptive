@@ -444,15 +444,46 @@ void AxionStringsLevel::specific_post_timestep()
     // axion_strings.output_delta_log_mr_over_h thereafter. The `while`
     // (not a single add) means a step that jumps past more than one
     // threshold still lands on the correct next one rather than drifting.
+    //
+    // log(m_r/H) itself is what's *reported* (network_scalars.dat's
+    // m_r_over_H column) throughout, including during Moore, where it is
+    // correctly constant -- but that means it cannot also drive the
+    // cadence *trigger* once in Moore (see AxionStringsLevel.hpp's
+    // s_moore_output_initialised comment): switch the trigger coordinate
+    // to D_elapsed = log(H(tau_switch)/H(tau)) there instead, same spacing.
     const double log_mr_over_h =
         -std::log(static_cast<double>(s_background.H_over_mr_direct(tau)));
-    if (log_mr_over_h < s_next_output_log_mr_over_h)
+    const bool in_moore =
+        s_background.c_sched.has_switch && tau >= s_background.c_sched.tau_switch;
+    if (in_moore)
     {
-        return;
+        if (!s_moore_output_initialised)
+        {
+            s_moore_H_switch               = s_background.H(s_background.c_sched.tau_switch);
+            s_next_output_moore_log_range  = 0.0;
+            s_moore_output_initialised     = true;
+        }
+        const double d_elapsed =
+            std::log(s_moore_H_switch / s_background.H(tau));
+        if (d_elapsed < s_next_output_moore_log_range)
+        {
+            return;
+        }
+        while (s_next_output_moore_log_range <= d_elapsed)
+        {
+            s_next_output_moore_log_range += s_output_cadence.delta_log_mr_over_h;
+        }
     }
-    while (s_next_output_log_mr_over_h <= log_mr_over_h)
+    else
     {
-        s_next_output_log_mr_over_h += s_output_cadence.delta_log_mr_over_h;
+        if (log_mr_over_h < s_next_output_log_mr_over_h)
+        {
+            return;
+        }
+        while (s_next_output_log_mr_over_h <= log_mr_over_h)
+        {
+            s_next_output_log_mr_over_h += s_output_cadence.delta_log_mr_over_h;
+        }
     }
 
     // count_plaquettes reads the (i+1,j+1,k+1) neighbours of every valid
@@ -598,6 +629,18 @@ void AxionStringsLevel::specific_post_timestep()
                    << energy.rho_axion_gradient_unscreened
                    << "  screened = " << energy.rho_axion_gradient_screened
                    << "\n"
+                   << "    rho_radial_kin: unscreened = "
+                   << energy.rho_radial_kinetic_unscreened
+                   << "  screened = " << energy.rho_radial_kinetic_screened
+                   << "\n"
+                   << "    rho_radial_grad: unscreened = "
+                   << energy.rho_radial_gradient_unscreened
+                   << "  screened = " << energy.rho_radial_gradient_screened
+                   << "\n"
+                   << "    rho_radial_mass: unscreened = "
+                   << energy.rho_radial_mass_unscreened
+                   << "  screened = " << energy.rho_radial_mass_screened
+                   << "\n"
                    << "    n_total = " << energy.n_total
                    << "  n_unmasked = " << energy.n_unmasked
                    << "  tension (core only) = " << tension_core_only
@@ -643,6 +686,9 @@ void AxionStringsLevel::specific_post_timestep()
              "rho_tot_unscreened", "rho_tot_screened",
              "rho_axion_kin_unscreened", "rho_axion_kin_screened",
              "rho_axion_grad_unscreened", "rho_axion_grad_screened",
+             "rho_radial_kin_unscreened", "rho_radial_kin_screened",
+             "rho_radial_grad_unscreened", "rho_radial_grad_screened",
+             "rho_radial_mass_unscreened", "rho_radial_mass_screened",
              "n_total", "n_unmasked", "mean_gamma_sq_v_sq", "mean_gamma",
              "n_velocity_corners", "tension_core_only",
              "tension_core_plus_tail"});
@@ -660,6 +706,12 @@ void AxionStringsLevel::specific_post_timestep()
         static_cast<amrex::Real>(energy.rho_axion_kinetic_screened),
         static_cast<amrex::Real>(energy.rho_axion_gradient_unscreened),
         static_cast<amrex::Real>(energy.rho_axion_gradient_screened),
+        static_cast<amrex::Real>(energy.rho_radial_kinetic_unscreened),
+        static_cast<amrex::Real>(energy.rho_radial_kinetic_screened),
+        static_cast<amrex::Real>(energy.rho_radial_gradient_unscreened),
+        static_cast<amrex::Real>(energy.rho_radial_gradient_screened),
+        static_cast<amrex::Real>(energy.rho_radial_mass_unscreened),
+        static_cast<amrex::Real>(energy.rho_radial_mass_screened),
         static_cast<amrex::Real>(energy.n_total),
         static_cast<amrex::Real>(energy.n_unmasked),
         static_cast<amrex::Real>(mean_gamma_sq_v_sq),

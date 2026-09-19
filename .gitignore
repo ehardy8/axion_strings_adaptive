@@ -23,3 +23,7 @@ Backtrace.*
 # Editors
 .vscode/
 *.swp
+
+# Python
+__pycache__/
+*.pyc

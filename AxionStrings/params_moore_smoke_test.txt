@@ -1,0 +1,40 @@
+# Smoke test for the new fat->Moore switch (2026-09-19, with the user):
+# small N=24 box, pre-evolution -> fat main evolution -> auto-derived
+# switch to Moore at axion_strings.log_mr_over_h_switch -> auto-stop at
+# the derived tau_end. Just checking the mechanism works end to end, not
+# a physics validation run.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+amr.max_level = 0
+amr.max_grid_size   = 24
+amr.blocking_factor = 8
+amr.n_error_buf     = 1
+
+geometry.is_periodic = 1 1 1
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = -1
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 1.0 # fat
+
+axion_strings.log_mr_over_h_i = 2.0
+
+axion_strings.N  = 24
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+axion_strings.ic_mode = fourier_relaxed
+axion_strings.pre_evolution.gamma = 1.0
+axion_strings.pre_evolution.xi_target = 2.0  # lax target, fast relaxation
+axion_strings.pre_evolution.k_max_over_mr        = 12
+axion_strings.pre_evolution.mean_square_variance = 0.5
+axion_strings.pre_evolution.seed = 1
+
+# The new bit: switch to Moore once log(m_r/H) reaches this value.
+axion_strings.log_mr_over_h_switch = 2.5
+
+axion_strings.output_first_log_mr_over_h = 2.0
+axion_strings.output_delta_log_mr_over_h = 0.05

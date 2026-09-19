@@ -154,3 +154,29 @@ TEST_CASE("tau_from_log_mr_over_h(0) is the tau0 = 1 fixed point")
     CHECK(bkg.tau_from_log_mr_over_h(0.0) ==
           doctest::Approx(Background::tau0).epsilon(tol));
 }
+
+TEST_CASE("H(tau) is consistent with H_over_mr_direct(tau) * m_r(tau), "
+          "with and without a switch")
+{
+    for (const bool has_switch : {false, true})
+    {
+        CTauSchedule sched{};
+        sched.c0 = 1.0;
+        if (has_switch)
+        {
+            sched.has_switch = true;
+            sched.c1         = 2.0; // Moore, a_inv = 2
+            sched.tau_switch = 5.0;
+        }
+        Background bkg(2.0, sched);
+
+        for (const double tau : {1.0, 5.0, 5.001, 12.3}) // straddles the switch
+        {
+            const double m_r     = std::sqrt(bkg.lambda(tau));
+            const double expected = bkg.H_over_mr_direct(tau) * m_r;
+            CAPTURE(has_switch);
+            CAPTURE(tau);
+            CHECK(bkg.H(tau) == doctest::Approx(expected).epsilon(tol));
+        }
+    }
+}

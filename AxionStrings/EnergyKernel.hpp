@@ -44,6 +44,15 @@ struct TotalEnergyResult
     double rho_axion_kinetic_screened{0.0};
     double rho_axion_gradient_unscreened{0.0};
     double rho_axion_gradient_screened{0.0};
+    // Radial (Higgs/amplitude) components, conventions.md sec.12 (2026-09-
+    // 18, with the user): see Energy.hpp's radial_*_energy_pointwise for
+    // the exact (not "total minus axion") definition used.
+    double rho_radial_kinetic_unscreened{0.0};
+    double rho_radial_kinetic_screened{0.0};
+    double rho_radial_gradient_unscreened{0.0};
+    double rho_radial_gradient_screened{0.0};
+    double rho_radial_mass_unscreened{0.0};
+    double rho_radial_mass_screened{0.0};
     double n_total{0.0};
     double n_unmasked{0.0}; // sum of masking_weight over all cells
 };
@@ -56,9 +65,12 @@ compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
 {
     amrex::ReduceOps<amrex::ReduceOpSum, amrex::ReduceOpSum,
                     amrex::ReduceOpSum, amrex::ReduceOpSum, amrex::ReduceOpSum,
+                    amrex::ReduceOpSum, amrex::ReduceOpSum, amrex::ReduceOpSum,
+                    amrex::ReduceOpSum, amrex::ReduceOpSum, amrex::ReduceOpSum,
                     amrex::ReduceOpSum, amrex::ReduceOpSum>
         reduce_op;
-    amrex::ReduceData<double, double, double, double, double, double, double>
+    amrex::ReduceData<double, double, double, double, double, double, double,
+                      double, double, double, double, double, double>
         reduce_data(reduce_op);
     using ReduceTuple = typename decltype(reduce_data)::Type;
 
@@ -116,10 +128,19 @@ compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
             const double rho_a_grad =
                 axion_gradient_energy_pointwise(grad_theta_sq, R);
 
+            const double rho_r_kin = radial_kinetic_energy_pointwise(
+                psi1, psi2, Pi1, Pi2, R, b_inv, tau);
+            const double rho_r_grad = radial_gradient_energy_pointwise(
+                grad_psi1_sq, grad_psi2_sq, psi_sq, grad_theta_sq, R);
+            const double rho_r_mass =
+                radial_mass_energy_pointwise(psi1, psi2, R, lambda);
+
             const double w = masking_weight(screening, psi1, psi2, R);
 
             return {rho,       rho * w,       rho_a_kin, rho_a_kin * w,
-                   rho_a_grad, rho_a_grad * w, w};
+                   rho_a_grad, rho_a_grad * w, rho_r_kin, rho_r_kin * w,
+                   rho_r_grad, rho_r_grad * w, rho_r_mass, rho_r_mass * w,
+                   w};
         });
 
     const ReduceTuple result = reduce_data.value(reduce_op);
@@ -129,32 +150,46 @@ compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
     // whole domain's, without this. AMReX's own Reduce::Sum/Min/Max free
     // functions (AMReX_Reduce.H) never add this either -- it is always
     // the caller's job for a cross-rank total.
-    double sums[7] = {
-        amrex::get<0>(result), amrex::get<1>(result), amrex::get<2>(result),
-        amrex::get<3>(result), amrex::get<4>(result), amrex::get<5>(result),
-        amrex::get<6>(result)};
-    amrex::ParallelDescriptor::ReduceRealSum(sums, 7);
-    const double sum_rho          = sums[0];
-    const double sum_rho_w        = sums[1];
-    const double sum_rho_a_kin    = sums[2];
-    const double sum_rho_a_kin_w  = sums[3];
-    const double sum_rho_a_grad   = sums[4];
-    const double sum_rho_a_grad_w = sums[5];
-    const double sum_w            = sums[6];
+    double sums[13] = {
+        amrex::get<0>(result),  amrex::get<1>(result),  amrex::get<2>(result),
+        amrex::get<3>(result),  amrex::get<4>(result),  amrex::get<5>(result),
+        amrex::get<6>(result),  amrex::get<7>(result),  amrex::get<8>(result),
+        amrex::get<9>(result),  amrex::get<10>(result), amrex::get<11>(result),
+        amrex::get<12>(result)};
+    amrex::ParallelDescriptor::ReduceRealSum(sums, 13);
+    const double sum_rho            = sums[0];
+    const double sum_rho_w          = sums[1];
+    const double sum_rho_a_kin      = sums[2];
+    const double sum_rho_a_kin_w    = sums[3];
+    const double sum_rho_a_grad     = sums[4];
+    const double sum_rho_a_grad_w   = sums[5];
+    const double sum_rho_r_kin      = sums[6];
+    const double sum_rho_r_kin_w    = sums[7];
+    const double sum_rho_r_grad     = sums[8];
+    const double sum_rho_r_grad_w   = sums[9];
+    const double sum_rho_r_mass     = sums[10];
+    const double sum_rho_r_mass_w   = sums[11];
+    const double sum_w              = sums[12];
 
     const auto n_total_d = static_cast<double>(n_cells_total);
 
     TotalEnergyResult out{};
     out.n_total    = n_total_d;
     out.n_unmasked = sum_w;
-    out.rho_tot_unscreened           = sum_rho / n_total_d;
-    out.rho_axion_kinetic_unscreened = sum_rho_a_kin / n_total_d;
+    out.rho_tot_unscreened            = sum_rho / n_total_d;
+    out.rho_axion_kinetic_unscreened  = sum_rho_a_kin / n_total_d;
     out.rho_axion_gradient_unscreened = sum_rho_a_grad / n_total_d;
+    out.rho_radial_kinetic_unscreened  = sum_rho_r_kin / n_total_d;
+    out.rho_radial_gradient_unscreened = sum_rho_r_grad / n_total_d;
+    out.rho_radial_mass_unscreened     = sum_rho_r_mass / n_total_d;
     if (sum_w > 0.0)
     {
         out.rho_tot_screened            = sum_rho_w / sum_w;
         out.rho_axion_kinetic_screened  = sum_rho_a_kin_w / sum_w;
         out.rho_axion_gradient_screened = sum_rho_a_grad_w / sum_w;
+        out.rho_radial_kinetic_screened  = sum_rho_r_kin_w / sum_w;
+        out.rho_radial_gradient_screened = sum_rho_r_grad_w / sum_w;
+        out.rho_radial_mass_screened     = sum_rho_r_mass_w / sum_w;
     }
     return out;
 }

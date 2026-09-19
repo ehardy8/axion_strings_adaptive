@@ -94,3 +94,47 @@ TEST_CASE("Moore dynamic range formula matches its algebraic inverse")
     CHECK(moore_max_log_dynamic_range(N, N1, N2, gamma) ==
           doctest::Approx(D).epsilon(1.0e-3));
 }
+
+TEST_CASE("Moore box plan reproduces N2 at the switch and the achievable "
+          "dynamic range at tau_end")
+{
+    // A fat (c0=1) background up to the switch -- R(tau)*m_r(tau) is
+    // constant through the whole fat phase (independently re-derived in
+    // this test, not assumed), so evaluating R_switch/m_r_switch at the
+    // switch is representative of the whole phase.
+    const int N        = 4000;
+    const double N1     = 1.2;
+    const double N2     = 8.0;
+    const double a_inv  = 2.0;
+    const double b_inv  = a_inv - 1.0;
+    const double c0      = 1.0; // fat
+
+    CTauSchedule sched{};
+    sched.c0 = c0;
+    Background bkg(a_inv, sched);
+
+    const double tau_switch = 30.0;
+    const double R_switch   = bkg.R(tau_switch);
+    const double m_r_switch = std::sqrt(bkg.lambda(tau_switch));
+    const double gamma      = 1.0 / bkg.H_over_mr_direct(tau_switch);
+
+    const auto plan = compute_moore_box_plan(N, N1, N2, gamma, a_inv, b_inv,
+                                             R_switch, m_r_switch, tau_switch);
+
+    // N2 is reproduced exactly at the switch by construction.
+    CHECK(1.0 / (N2 * plan.dx * R_switch * m_r_switch) ==
+          doctest::Approx(1.0).epsilon(1.0e-12));
+
+    // R(tau)*m_r(tau) is constant through the fat phase -- check this
+    // independently at a different tau within the phase, confirming dx
+    // (and hence N2) would be identical had it been evaluated there.
+    const double tau_other   = 12.0;
+    CHECK(bkg.R(tau_other) * std::sqrt(bkg.lambda(tau_other)) ==
+          doctest::Approx(R_switch * m_r_switch).epsilon(1.0e-9));
+
+    // H(tau) does not depend on c (only lambda does) -- compute H at
+    // tau_switch and tau_end directly from R/R' (no lambda involved) and
+    // check the ratio matches the achievable dynamic range D exactly.
+    const double D_direct = std::log(bkg.H(tau_switch) / bkg.H(plan.tau_end));
+    CHECK(D_direct == doctest::Approx(plan.D).epsilon(1.0e-9));
+}

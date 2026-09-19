@@ -95,15 +95,24 @@ class Background
         return std::pow(tau / tau0, (c_now - a_inv) / (a_inv - 1.0));
     }
 
-    // H/m_r computed directly from the analytic background: physical
-    // H = Rdot/R, and cosmic dt = R dtau so Rdot = R'(tau)/R(tau), giving
-    // H = R'(tau)/R(tau)^2; m_r = sqrt(lambda(tau)) (v = 1). Valid with or
-    // without a c-switch, since it only uses R, R' and lambda directly.
+    // Physical Hubble rate H = Rdot/R; cosmic dt = R dtau, so
+    // Rdot = R'(tau)/R(tau), giving H = R'(tau)/R(tau)^2. Independent of c
+    // (only lambda depends on c -- R does not), so this is valid identically
+    // on either side of a switch, or straddling one, with no correction
+    // needed (2026-09-19, with the user: used for a Moore-phase output
+    // cadence, where log(m_r/H) itself is frozen and cannot drive one).
+    [[nodiscard]] double H(double tau) const
+    {
+        return R_prime(tau) / (R(tau) * R(tau));
+    }
+
+    // H/m_r computed directly from the analytic background; m_r =
+    // sqrt(lambda(tau)) (v = 1). Valid with or without a c-switch, since it
+    // only uses R, R' and lambda directly.
     [[nodiscard]] double H_over_mr_direct(double tau) const
     {
-        const double hubble = R_prime(tau) / (R(tau) * R(tau));
-        const double m_r    = std::sqrt(lambda(tau));
-        return hubble / m_r;
+        const double m_r = std::sqrt(lambda(tau));
+        return H(tau) / m_r;
     }
 
     // Inverse of H_over_mr_closed_form (2026-09-18, with the user: a more

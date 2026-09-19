@@ -101,6 +101,23 @@ class AxionStringsLevel : public GRAmrLevel
     inline static AxionStringsParams::OutputCadence s_output_cadence{};
     inline static double s_next_output_log_mr_over_h{0.0};
 
+    // Moore-phase output cadence (2026-09-19, with the user -- found via the
+    // fat->Moore switch smoke test): log(m_r/H) is frozen by construction
+    // once in Moore, so it cannot drive a cadence there -- the log(m_r/H)
+    // check above would trigger exactly once, at the switch, and never
+    // again for the rest of the run. Once tau crosses tau_switch, snapshots
+    // are instead cadenced on D_elapsed(tau) = log(H(tau_switch)/H(tau)) --
+    // the same natural, monotonically increasing quantity box planning
+    // itself uses for the achievable dynamic range (BoxPlan.hpp) -- spaced
+    // by the same axion_strings.output_delta_log_mr_over_h value (no new
+    // parameter: one cadence density, applied to whichever coordinate is
+    // actually advancing in the current phase). The reported log(m_r/H) in
+    // network_scalars.dat is unaffected -- correctly constant throughout
+    // Moore -- only the *cadence trigger* uses a different coordinate.
+    inline static bool s_moore_output_initialised{false};
+    inline static double s_moore_H_switch{0.0};
+    inline static double s_next_output_moore_log_range{0.0};
+
   private:
 
     AxionStringsLevel &getLevel(int lev)

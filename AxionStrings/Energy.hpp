@@ -48,6 +48,8 @@
 #define AMREX_FORCE_INLINE inline
 #endif
 
+#include <cmath>
+
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE double
 rho_tot_pointwise(double psi1, double psi2, double Pi1, double Pi2,
                   double grad_psi1_sq, double grad_psi2_sq, double R,
@@ -96,6 +98,84 @@ axion_gradient_energy_pointwise(double grad_theta_sq_comoving, double R)
 {
     constexpr double f_a = 1.4142135623730951; // sqrt(2) v, v = 1
     return 0.5 * f_a * f_a * grad_theta_sq_comoving / (R * R);
+}
+
+// Radial (Higgs/amplitude) energy density, conventions.md sec.12's
+// "Radial: kinetic/gradient/mass" (2026-09-18, with the user: not yet
+// implemented before now -- sec.12 names these but gives no psi/Pi
+// formula). r = |phi| - v is the amplitude's own deviation from the vev;
+// these three functions are its exact kinetic/gradient/potential energy,
+// defined the same way axion_kinetic/gradient_energy_pointwise define the
+// *phase*-only energy above: the physical energy carried by that one
+// degree of freedom alone, not "total minus axion" (which would also
+// include the interaction/cross terms conventions.md sec.12 lists as
+// separate, un-requested observables).
+//
+// |phi| = v|psi|/R (v=1, code units), so d|phi|/dt (cosmic time) is the
+// *radial* projection of phi_dot's numerator (c1,c2) = (Pi1,Pi2) -
+// psi/(b_inv tau) onto psi's own direction psi_hat = psi/|psi|:
+//   d|phi|/dt = (v/R^2) (psi1 c1 + psi2 c2)/|psi|
+// -- exact, not linearised: the *orthogonal* (tangential) projection of
+// the same (c1,c2) is exactly f_a*theta_prime (Masking.hpp's identity),
+// confirmed algebraically (the (1/(b_inv tau))*psi_i terms cancel exactly
+// in psi1 c2 - psi2 c1, leaving psi1 Pi2 - Pi1 psi2), so kinetic + radial
+// = tangential exactly decomposes the full |phi_dot|^2 via Pythagoras --
+// checked by expanding both sides. psi=0 is a measure-zero core point
+// where "radial direction" is undefined; guarded to 0, the same fallback
+// Masking.hpp/EnergyKernel.hpp already use for theta_prime there.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE double
+radial_kinetic_energy_pointwise(double psi1, double psi2, double Pi1,
+                                double Pi2, double R, double b_inv,
+                                double tau)
+{
+    const double c1 = Pi1 - psi1 / (b_inv * tau);
+    const double c2 = Pi2 - psi2 / (b_inv * tau);
+    const double psi_sq = psi1 * psi1 + psi2 * psi2;
+    if (psi_sq <= 0.0)
+    {
+        return 0.0;
+    }
+    const double radial_dot = (psi1 * c1 + psi2 * c2) / std::sqrt(psi_sq);
+    const double R2 = R * R;
+    return (radial_dot * radial_dot) / (R2 * R2);
+}
+
+// Radial gradient energy: |grad|phi||^2, physical. grad|psi| (comoving)
+// follows the same per-direction orthogonal split as the kinetic term
+// above -- an exact Pythagorean identity (expand both sides; the cross
+// terms cancel), not an approximation:
+//   (d_d psi1)^2 + (d_d psi2)^2 = (d_d|psi|)^2 + |psi|^2 (d_d theta)^2
+// so |grad|psi||^2 = (grad_psi1_sq + grad_psi2_sq) - psi_sq*grad_theta_sq
+// -- reuses the same intermediates EnergyKernel.hpp already computes for
+// rho_tot/axion_gradient (grad_psi1_sq, grad_psi2_sq, the comoving
+// grad_theta_sq), no separate per-direction loop needed. Well-defined at
+// psi=0 with no extra guard: grad_theta_sq is already 0 there (its own
+// psi_sq>0 guard, upstream), so this correctly reduces to the full
+// (grad_psi1_sq+grad_psi2_sq) -- consistent, since at the exact core all
+// gradient energy is "radial" by construction and axion_gradient is 0.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE double
+radial_gradient_energy_pointwise(double grad_psi1_sq, double grad_psi2_sq,
+                                 double psi_sq, double grad_theta_sq_comoving,
+                                 double R)
+{
+    const double grad_mod_sq_comoving =
+        grad_psi1_sq + grad_psi2_sq - psi_sq * grad_theta_sq_comoving;
+    const double R2 = R * R;
+    return grad_mod_sq_comoving / (R2 * R2);
+}
+
+// Radial (Higgs) mass/potential energy: the same (lambda/4)(|phi|^2-v^2)^2
+// term already inside rho_tot_pointwise's "potential" local, exposed here
+// standalone so it can be saved as its own diagnostic.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE double
+radial_mass_energy_pointwise(double psi1, double psi2, double R,
+                             double lambda)
+{
+    const double psi_sq_minus_R_sq = psi1 * psi1 + psi2 * psi2 - R * R;
+    const double potential =
+        0.25 * lambda * psi_sq_minus_R_sq * psi_sq_minus_R_sq;
+    const double R2 = R * R;
+    return potential / (R2 * R2);
 }
 
 #endif // ENERGY_HPP_

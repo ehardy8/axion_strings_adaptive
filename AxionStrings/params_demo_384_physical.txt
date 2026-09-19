@@ -1,0 +1,84 @@
+# AxionStrings parameter file -- N=384 test of the PHYSICAL string system
+# (c0=0), relaxed via pre-evolution from a random Fourier IC down to
+# xi_target=1, main evolution starting at log(m_r/H_i)=3 (2026-09-18, with
+# the user: "let's also do a test on a grid of size 384^3 for the physical
+# string starting at log = 3 with xi=1").
+#
+# Box planning differs qualitatively from the fat-string demo runs: for
+# physical mode (c0=0), m_r is CONSTANT (lambda(tau)=lambda0 always), and
+# N2=1 fixes the resolution at the *final* time only, so the comoving grid
+# spacing dx = 1/sqrt(N) is much finer than fat mode's dx=1 -- computed
+# directly from BoxPlan.hpp's formula: exponent=(a_inv-1)/(a_inv-c0)=0.5,
+# L_tilde=sqrt(N)=sqrt(384)=19.596, dx=L_tilde/N=1/sqrt(384)=0.05103.
+# tau_f=sqrt(384)=19.596 too (=power in the box-plan formula), consistent
+# with log(m_r/H) at tau_f = ln(N) = ln(384) = 5.951.
+#
+# pre_evolution.gamma follows the same m_r*dx=1 convention as the fat-mode
+# demo runs, generalised: gamma_pre = 1/dx_pre = 1/dx_main (same box,
+# STATUS.md decision) = sqrt(384) = 19.596 -- NOT 1 like the fat-mode case,
+# because dx itself isn't 1 here. k_max_over_mr is chosen the same way too:
+# k_max_cells = k_max_over_mr * gamma_pre * dx_pre = k_max_over_mr exactly
+# (gamma_pre*dx_pre=1 by construction, any mode), so k_max_over_mr=N/2=192
+# puts the pre-evolution IC's broadband cutoff exactly at this grid's
+# Nyquist limit, same choice as the N=256 fat-string runs (there N/2=128).
+
+#################################################
+# Filesystem parameters
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+
+#################################################
+# Grid parameters -- amr.n_cell/geometry.prob_extent derived by box
+# planning below from axion_strings.N/N1/N2.
+
+amr.max_level = 0
+
+amr.max_grid_size   = 64
+amr.blocking_factor = 32
+amr.n_error_buf     = 1
+
+#################################################
+# Boundary condition parameters
+
+geometry.is_periodic = 1 1 1
+
+#################################################
+# Evolution parameters
+
+evolution.dt_multiplier = 0.2
+# okToContinue() is the real stop condition (derived tau_f); no step cap.
+evolution.max_steps = -1
+
+#################################################
+# AxionStrings parameters
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 0.0 # physical string
+
+axion_strings.log_mr_over_h_i = 3.0
+
+axion_strings.N  = 384
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+axion_strings.ic_mode = fourier_relaxed
+
+axion_strings.pre_evolution.gamma = 19.596  # = 1/dx = sqrt(384), see header
+axion_strings.pre_evolution.xi_target = 1.0
+axion_strings.pre_evolution.k_max_over_mr        = 192  # = N/2, this grid's Nyquist limit
+axion_strings.pre_evolution.mean_square_variance = 0.5  # <|psi|^2> = 2*this = v^2 = 1
+axion_strings.pre_evolution.seed = 42
+
+# Screening (scheme B, default threshold 0.8) + spectrum, same as the
+# fat-string screened demo run, so this run also exercises the new
+# screened radial energy components (kinetic/gradient/mass).
+axion_strings.masking.scheme = B
+axion_strings.compute_spectrum = 1
+
+# Diagnostic output cadence: log(m_r/H) spans [3, ln(384)=5.951] here.
+axion_strings.output_first_log_mr_over_h = 3.0
+axion_strings.output_delta_log_mr_over_h = 0.1
+
+axion_strings.save_projection = 1

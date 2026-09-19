@@ -38,22 +38,63 @@ inline Background read_background()
     CTauSchedule sched{};
     pp.get("c0", sched.c0);
 
+    // axion_strings.log_mr_over_h_switch (2026-09-19, with the user): the
+    // fat->Moore protocol's switch time, specified physically rather than
+    // as a raw tau_switch -- mirrors log_mr_over_h_i's own rationale
+    // exactly. Resolved here, before the raw c1/tau_switch reading below,
+    // using only a_inv/sched.c0 (already read above) via a throwaway
+    // Background -- tau_from_log_mr_over_h only ever touches those two
+    // fields (its own doc comment), so this sidesteps needing the *final*
+    // Background (which needs the switch resolved first) to resolve the
+    // switch. c1 is set to a_inv automatically: reaching Moore is the only
+    // supported use of a switch (see apply_box_plan's own comment), so
+    // there is no other value for the user to sensibly choose here.
+    const bool has_log_switch = pp.contains("log_mr_over_h_switch");
     const bool has_c1         = pp.contains("c1");
     const bool has_tau_switch = pp.contains("tau_switch");
-    if (has_c1 != has_tau_switch)
+    if (has_log_switch && (has_c1 || has_tau_switch))
     {
-        pp.error("c1", "c1 and tau_switch must both be set, or both left "
-                       "unset (conventions.md sec.4: at most one switch)");
+        pp.error("log_mr_over_h_switch",
+                 "cannot be combined with c1/tau_switch -- pick one way to "
+                 "specify the switch");
     }
-    sched.has_switch = has_c1;
-    if (sched.has_switch)
+    if (has_log_switch)
     {
-        pp.get("c1", sched.c1);
-        pp.get("tau_switch", sched.tau_switch);
-        if (sched.tau_switch <= 0.0)
+        constexpr double tol = 1.0e-9;
+        if (std::abs(a_inv - sched.c0) < tol)
         {
-            pp.error("tau_switch", "must be > 0");
+            pp.error("log_mr_over_h_switch",
+                     "cannot derive tau_switch when axion_strings.c0 = "
+                     "a_inv already -- there is no fat phase to switch "
+                     "from");
         }
+        double log_mr_over_h_switch{};
+        pp.get("log_mr_over_h_switch", log_mr_over_h_switch);
+
+        const Background pre_switch_background{a_inv, CTauSchedule{sched.c0}};
+        sched.has_switch = true;
+        sched.c1         = a_inv;
+        sched.tau_switch =
+            pre_switch_background.tau_from_log_mr_over_h(log_mr_over_h_switch);
+    }
+    else
+    {
+        if (has_c1 != has_tau_switch)
+        {
+            pp.error("c1", "c1 and tau_switch must both be set, or both "
+                           "left unset (conventions.md sec.4: at most one "
+                           "switch)");
+        }
+        sched.has_switch = has_c1;
+        if (sched.has_switch)
+        {
+            pp.get("c1", sched.c1);
+            pp.get("tau_switch", sched.tau_switch);
+        }
+    }
+    if (sched.has_switch && sched.tau_switch <= 0.0)
+    {
+        pp.error("tau_switch", "must be > 0");
     }
 
     return {a_inv, sched};
@@ -346,8 +387,12 @@ inline void apply_box_plan(const Background &background, double tau_i)
                "amr.n_cell by hand.\n";
     }
 
-    if (moore_mode)
+    if (moore_mode && !background.c_sched.has_switch)
     {
+        // c0 = a_inv from the very start -- no preceding fat phase, so the
+        // "dx from N2 via R*m_r = const through the fat phase" derivation
+        // below does not apply (there is no fat phase). Unchanged from
+        // before: a dynamic-range check only, geometry/stop_time by hand.
         double gamma{};
         double target_log_range{};
         pp.get("gamma", gamma);
@@ -361,15 +406,13 @@ inline void apply_box_plan(const Background &background, double tau_i)
             moore_max_log_dynamic_range(N, N1, N2, gamma);
 
         amrex::Print()
-            << "  Moore mode (c = a_inv, reached "
-            << (background.c_sched.has_switch ? "via a switch" : "from tau_i")
-            << "): gamma = " << gamma
-            << ", requested log range = " << target_log_range
+            << "  Moore mode (c = a_inv from tau_i, no fat phase): gamma = "
+            << gamma << ", requested log range = " << target_log_range
             << ", achievable log range = " << max_log_range << "\n"
             << "  geometry.prob_extent and evolution.stop_time are not "
-               "derived in Moore mode -- set them by hand (sec.5 Moore-phase "
-               "box planning is a dynamic-range check here, not a closed "
-               "form for L_tilde/tau_f).\n";
+               "derived here -- set them by hand (sec.5 Moore-phase box "
+               "planning is a dynamic-range check only when there is no "
+               "preceding fat phase to derive dx from).\n";
 
         if (max_log_range < target_log_range)
         {
@@ -377,6 +420,85 @@ inline void apply_box_plan(const Background &background, double tau_i)
                 "target_log_range",
                 "cannot be reached with the requested N, N1, N2, gamma (see "
                 "achievable log range printed above)");
+        }
+        return;
+    }
+
+    if (moore_mode)
+    {
+        // Reached via a fat->Moore switch (2026-09-19, with the user):
+        // fully derived, mirroring the non-Moore branch below. gamma is
+        // *derived* from tau_switch, not a separate manual input -- the
+        // previous interface let gamma and tau_switch silently disagree,
+        // since nothing checked them against each other.
+        const double tau_switch = background.c_sched.tau_switch;
+        const double gamma      = 1.0 / background.H_over_mr_direct(tau_switch);
+        const double R_switch   = background.R(tau_switch);
+        const double m_r_switch = std::sqrt(background.lambda(tau_switch));
+
+        const auto plan = compute_moore_box_plan(
+            N, N1, N2, gamma, a_inv, background.b_inv, R_switch, m_r_switch,
+            tau_switch);
+
+        amrex::Print()
+            << "  Moore mode (c = a_inv, reached via a switch at "
+               "tau_switch = "
+            << tau_switch << ", gamma = m_r/H there = " << gamma << ")\n"
+            << "  L_tilde (from N2 at the switch) = " << plan.L_tilde
+            << ", delta_x = " << plan.dx << "\n"
+            << "  achievable Moore dynamic range D = log(H_switch/H_end) = "
+            << plan.D << " -> tau_end = " << plan.tau_end << "\n";
+
+        double target_log_range{};
+        if (pp.queryAdd("target_log_range", target_log_range) &&
+            plan.D < target_log_range)
+        {
+            pp.error(
+                "target_log_range",
+                "cannot be reached with the requested N, N1, N2 (see "
+                "achievable log range printed above) -- increase N or "
+                "reduce N1/N2/the switch's log(m_r/H)");
+        }
+
+        GRParmParse geom_pp("geometry");
+        if (geom_pp.contains("prob_extent"))
+        {
+            std::array<double, AMREX_SPACEDIM> prob_extent{};
+            geom_pp.get("prob_extent", prob_extent);
+            for (double L : prob_extent)
+            {
+                if (std::abs(L - plan.L_tilde) > 1.0e-6 * plan.L_tilde)
+                {
+                    geom_pp.error(
+                        "prob_extent",
+                        "does not match the box-planning-derived L_tilde -- "
+                        "either remove geometry.prob_extent to let it be "
+                        "derived, or fix axion_strings.N/N1/N2 to match");
+                }
+            }
+        }
+        else
+        {
+            geom_pp.addarr(
+                "prob_extent",
+                std::vector<double>{plan.L_tilde, plan.L_tilde, plan.L_tilde});
+            amrex::Print() << "  -> geometry.prob_extent set to "
+                           << plan.L_tilde << " " << plan.L_tilde << " "
+                           << plan.L_tilde << "\n";
+        }
+
+        pp.add("derived_tau_f", plan.tau_end);
+
+        GRParmParse evolution_pp("evolution");
+        if (!evolution_pp.contains("stop_time"))
+        {
+            evolution_pp.add("stop_time", -1.0);
+            amrex::Print()
+                << "  -> evolution.stop_time set to -1 (unlimited): "
+                   "AxionStringsLevel::okToContinue() is the authoritative "
+                   "stop condition now, comparing the live tau against "
+                   "axion_strings.derived_tau_f = "
+                << plan.tau_end << "\n";
         }
         return;
     }

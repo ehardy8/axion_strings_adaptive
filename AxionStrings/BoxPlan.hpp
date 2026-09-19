@@ -72,4 +72,49 @@ compute_general_box_plan(int N, double N1, double N2, double a_inv, double c)
     return 2.0 * std::log(static_cast<double>(N) / (N2 * N1 * gamma));
 }
 
+// Full Moore-phase box plan (2026-09-19, with the user: automating what had
+// been "geometry.prob_extent and evolution.stop_time are not derived in
+// Moore mode -- set them by hand"). N (box size) and N1/N2 (Hubble-patch/
+// core-resolution targets) are the inputs; dx, L_tilde, the achievable
+// dynamic range and the run's stop time (tau_end) are all derived.
+//
+// dx: R(tau)*m_r(tau) is exactly constant through the whole fat phase (any
+// a_inv) -- not merely "set at the start" but literally unchanging -- so
+// choosing dx from N2 evaluated at the switch is equivalent to evaluating
+// it anywhere in the fat phase, including the pre-evolution/main handoff.
+// R_switch, m_r_switch are passed in as plain doubles (not a Background)
+// to keep this file AMReX/Background-free, matching every other function
+// here; the caller (AxionStringsParams.hpp) evaluates them.
+//
+// tau_end: H(tau) = R'(tau)/R(tau)^2 does not depend on c at all (only
+// lambda does, per Background.hpp -- R(tau) is identical whichever side of
+// a switch tau falls on), and R(tau) = R0(tau/tau0)^(1/b_inv) gives the
+// closed form H(tau) ~ tau^(-a_inv/b_inv) unconditionally. The achievable
+// dynamic range D = log(H_switch/H_end) (moore_max_log_dynamic_range,
+// natural-log form used consistently here rather than the base-appropriate
+// log(H0/H)_max notation in conventions.md, which differs only by the
+// already-included factor of 2) therefore inverts to a closed-form
+// tau_end = tau_switch * exp(D * b_inv / a_inv), with no separate ODE
+// solve needed and no dependence on how long the preceding fat phase took.
+struct MooreBoxPlan
+{
+    double dx{};
+    double L_tilde{};
+    double D{};       // achievable log(H_switch/H_end)
+    double tau_end{};
+};
+
+[[nodiscard]] inline MooreBoxPlan
+compute_moore_box_plan(int N, double N1, double N2, double gamma,
+                       double a_inv, double b_inv, double R_switch,
+                       double m_r_switch, double tau_switch)
+{
+    MooreBoxPlan plan{};
+    plan.dx      = 1.0 / (N2 * R_switch * m_r_switch);
+    plan.L_tilde = N * plan.dx;
+    plan.D       = moore_max_log_dynamic_range(N, N1, N2, gamma);
+    plan.tau_end = tau_switch * std::exp(plan.D * b_inv / a_inv);
+    return plan;
+}
+
 #endif // BOXPLAN_HPP_

@@ -21,14 +21,30 @@
 
 #include <cmath>
 
+// Milestone-2 Phase 2: the primitive the composite (cross-level) diagnostic
+// needs is the total comoving string length, not a single (N_p, dx) pair --
+// a hierarchy contributes one (N_p_level, dx_level) term per level, each
+// worth (2/3)*N_p_level*dx_level of comoving length, and the lengths (not
+// the raw N_p counts) are what can be summed across levels of different dx.
+// xi_from_plaquette_count below is now the single-level special case of
+// this, kept unchanged for pre-evolution (task 1.5), which is always
+// single-level.
+[[nodiscard]] inline double
+xi_from_comoving_length(double ell_comoving, double L_tilde, double a_inv,
+                        double tau)
+{
+    const double a_inv_minus_1 = a_inv - 1.0;
+    return ell_comoving / (L_tilde * L_tilde * L_tilde) *
+           (a_inv_minus_1 * a_inv_minus_1 * a_inv_minus_1 / (a_inv * a_inv)) *
+           (tau * tau);
+}
+
 [[nodiscard]] inline double xi_from_plaquette_count(double N_p, double dx,
                                                      double L_tilde,
                                                      double a_inv, double tau)
 {
-    const double a_inv_minus_1 = a_inv - 1.0;
-    return (2.0 / 3.0) * N_p * (dx / (L_tilde * L_tilde * L_tilde)) *
-           (a_inv_minus_1 * a_inv_minus_1 * a_inv_minus_1 / (a_inv * a_inv)) *
-           (tau * tau);
+    return xi_from_comoving_length((2.0 / 3.0) * N_p * dx, L_tilde, a_inv,
+                                   tau);
 }
 
 // Inverse of the above, specialised to dx = L_tilde / N (N grid points per

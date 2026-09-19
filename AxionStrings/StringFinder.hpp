@@ -20,6 +20,7 @@
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Reduce.H>
+#include <AMReX_iMultiFab.H>
 
 #include <cmath>
 
@@ -66,19 +67,34 @@ plaquette_windings_at(const amrex::Array4<amrex::Real const> &a, int i, int j,
     return w;
 }
 
+// Milestone-2 Phase 2: `mask`, when non-null, is a per-cell coverage mask on
+// `state`'s own BoxArray/DistributionMapping (1 = include, 0 = skip) --
+// used by the composite (cross-level) diagnostic to exclude cells covered
+// by a finer level, so the same physical plaquette is not counted twice at
+// two resolutions. `nullptr` (the default) reproduces the exact prior
+// single-level behaviour, cell for cell.
 [[nodiscard]] inline PlaquetteCounts
-count_plaquettes(const amrex::MultiFab &state)
+count_plaquettes(const amrex::MultiFab &state,
+                 const amrex::iMultiFab *mask = nullptr)
 {
     amrex::ReduceOps<amrex::ReduceOpSum, amrex::ReduceOpSum> reduce_op;
     amrex::ReduceData<long, long> reduce_data(reduce_op);
     using ReduceTuple = typename decltype(reduce_data)::Type;
 
-    const auto &arrs = state.const_arrays();
+    const auto &arrs      = state.const_arrays();
+    const auto &mask_arrs = (mask != nullptr) ? mask->const_arrays()
+                                              : amrex::MultiArray4<int const>{};
+    const bool has_mask   = (mask != nullptr);
 
     reduce_op.eval(
         state, amrex::IntVect(0), reduce_data,
         [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) -> ReduceTuple
         {
+            if (has_mask && mask_arrs[box_no](i, j, k) == 0)
+            {
+                return {0L, 0L};
+            }
+
             const auto w = plaquette_windings_at(arrs[box_no], i, j, k);
 
             const long plain = (w.w_xy != 0 ? 1 : 0) + (w.w_yz != 0 ? 1 : 0) +

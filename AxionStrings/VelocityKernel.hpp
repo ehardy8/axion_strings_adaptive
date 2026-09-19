@@ -18,6 +18,7 @@
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Reduce.H>
+#include <AMReX_iMultiFab.H>
 
 struct VelocityResult
 {
@@ -25,16 +26,24 @@ struct VelocityResult
     long count{0};
 };
 
+// Milestone-2 Phase 2: `mask` (1 = include, 0 = skip), when non-null, excludes
+// cells covered by a finer level from this level's own reduction -- see
+// StringFinder.hpp::count_plaquettes for the identical convention. `nullptr`
+// (the default) reproduces the exact prior single-level behaviour.
 [[nodiscard]] inline VelocityResult
 compute_velocity_at_pierced_corners(const amrex::MultiFab &state,
                                     amrex::Real R, amrex::Real tau,
-                                    amrex::Real b_inv, amrex::Real m_r)
+                                    amrex::Real b_inv, amrex::Real m_r,
+                                    const amrex::iMultiFab *mask = nullptr)
 {
     amrex::ReduceOps<amrex::ReduceOpSum, amrex::ReduceOpSum> reduce_op;
     amrex::ReduceData<double, long> reduce_data(reduce_op);
     using ReduceTuple = typename decltype(reduce_data)::Type;
 
     const auto &arrs    = state.const_arrays();
+    const auto &mask_arrs = (mask != nullptr) ? mask->const_arrays()
+                                              : amrex::MultiArray4<int const>{};
+    const bool has_mask  = (mask != nullptr);
     const double inv_bt = 1.0 / (static_cast<double>(b_inv) *
                                  static_cast<double>(tau));
     const double R_d    = R;
@@ -44,6 +53,11 @@ compute_velocity_at_pierced_corners(const amrex::MultiFab &state,
         state, amrex::IntVect(0), reduce_data,
         [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) -> ReduceTuple
         {
+            if (has_mask && mask_arrs[box_no](i, j, k) == 0)
+            {
+                return {0.0, 0L};
+            }
+
             const auto &a = arrs[box_no];
 
             auto phase = [&](int ii, int jj, int kk) -> double

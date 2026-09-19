@@ -35,6 +35,9 @@
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Reduce.H>
+#include <AMReX_iMultiFab.H>
+
+#include <vector>
 
 struct TotalEnergyResult
 {
@@ -53,34 +56,86 @@ struct TotalEnergyResult
     double rho_radial_gradient_screened{0.0};
     double rho_radial_mass_unscreened{0.0};
     double rho_radial_mass_screened{0.0};
+    // Milestone-2 Phase 2 (2026-09-19, with the user): for a single level
+    // these were plain point *counts* (dividing by them was equivalent to a
+    // volume average only because every cell has the same dx). A composite
+    // hierarchy has cells of different physical volume at different levels,
+    // so these are now comoving *volumes* (a count times dx^3, summed
+    // across whichever level(s) contributed) -- n_total should equal
+    // L_tilde^3 to floating-point precision (every comoving cell counted
+    // exactly once across the hierarchy), which is a strong composite-mask
+    // correctness check in itself. Single-level callers see the same
+    // physical n_total/n_unmasked *value* as before (n_cells*dx^3 instead
+    // of n_cells), so any downstream formula using them (e.g. the tension
+    // calculation in AxionStringsLevel.cpp) must drop the dx^3 it used to
+    // apply separately -- the product is unchanged, only how it is
+    // factored.
     double n_total{0.0};
-    double n_unmasked{0.0}; // sum of masking_weight over all cells
+    double n_unmasked{0.0}; // sum of masking_weight*dx^3 (comoving volume)
 };
 
-[[nodiscard]] inline TotalEnergyResult
-compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
-                     amrex::Real R, amrex::Real lambda, amrex::Real b_inv,
-                     amrex::Real tau, const MaskingParams &screening,
-                     long n_cells_total)
+// Raw, unnormalised, single-level sums -- the composite driver below
+// combines these across levels (each pre-multiplied by that level's own
+// dx^3) before normalising once, at the very end, into a TotalEnergyResult.
+struct TotalEnergySums
+{
+    double sum_rho{0.0};
+    double sum_rho_w{0.0};
+    double sum_rho_a_kin{0.0};
+    double sum_rho_a_kin_w{0.0};
+    double sum_rho_a_grad{0.0};
+    double sum_rho_a_grad_w{0.0};
+    double sum_rho_r_kin{0.0};
+    double sum_rho_r_kin_w{0.0};
+    double sum_rho_r_grad{0.0};
+    double sum_rho_r_grad_w{0.0};
+    double sum_rho_r_mass{0.0};
+    double sum_rho_r_mass_w{0.0};
+    double sum_w{0.0};        // sum of masking_weight
+    double n_uncovered{0.0}; // count of cells actually included (mask applied)
+};
+
+// Milestone-2 Phase 2: `mask` (1 = include, 0 = skip), when non-null, excludes
+// cells covered by a finer level -- see StringFinder.hpp::count_plaquettes
+// for the identical convention. `nullptr` (the default) includes every
+// cell, reproducing the single-level behaviour exactly.
+//
+// `state` must already have at least 2 valid ghost cells (state.
+// FillBoundary, or a composite FillPatch for level>0) before calling this --
+// FourthOrderDerivatives::diff1 uses a 2-cell-wide stencil.
+[[nodiscard]] inline TotalEnergySums
+compute_total_energy_sums(const amrex::MultiFab &state, amrex::Real dx,
+                          amrex::Real R, amrex::Real lambda, amrex::Real b_inv,
+                          amrex::Real tau, const MaskingParams &screening,
+                          const amrex::iMultiFab *mask = nullptr)
 {
     amrex::ReduceOps<amrex::ReduceOpSum, amrex::ReduceOpSum,
                     amrex::ReduceOpSum, amrex::ReduceOpSum, amrex::ReduceOpSum,
                     amrex::ReduceOpSum, amrex::ReduceOpSum, amrex::ReduceOpSum,
                     amrex::ReduceOpSum, amrex::ReduceOpSum, amrex::ReduceOpSum,
-                    amrex::ReduceOpSum, amrex::ReduceOpSum>
+                    amrex::ReduceOpSum, amrex::ReduceOpSum, amrex::ReduceOpSum>
         reduce_op;
     amrex::ReduceData<double, double, double, double, double, double, double,
-                      double, double, double, double, double, double>
+                      double, double, double, double, double, double, double>
         reduce_data(reduce_op);
     using ReduceTuple = typename decltype(reduce_data)::Type;
 
     const auto &arrs = state.const_arrays();
+    const auto &mask_arrs = (mask != nullptr) ? mask->const_arrays()
+                                              : amrex::MultiArray4<int const>{};
+    const bool has_mask = (mask != nullptr);
     const FourthOrderDerivatives deriv(dx);
 
     reduce_op.eval(
         state, amrex::IntVect(0), reduce_data,
         [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) -> ReduceTuple
         {
+            if (has_mask && mask_arrs[box_no](i, j, k) == 0)
+            {
+                return {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                       0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            }
+
             const auto &a = arrs[box_no];
             const double psi1 = a(i, j, k, c_psi1);
             const double psi2 = a(i, j, k, c_psi2);
@@ -140,7 +195,7 @@ compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
             return {rho,       rho * w,       rho_a_kin, rho_a_kin * w,
                    rho_a_grad, rho_a_grad * w, rho_r_kin, rho_r_kin * w,
                    rho_r_grad, rho_r_grad * w, rho_r_mass, rho_r_mass * w,
-                   w};
+                   w,          1.0};
         });
 
     const ReduceTuple result = reduce_data.value(reduce_op);
@@ -150,46 +205,134 @@ compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
     // whole domain's, without this. AMReX's own Reduce::Sum/Min/Max free
     // functions (AMReX_Reduce.H) never add this either -- it is always
     // the caller's job for a cross-rank total.
-    double sums[13] = {
+    double sums[14] = {
         amrex::get<0>(result),  amrex::get<1>(result),  amrex::get<2>(result),
         amrex::get<3>(result),  amrex::get<4>(result),  amrex::get<5>(result),
         amrex::get<6>(result),  amrex::get<7>(result),  amrex::get<8>(result),
         amrex::get<9>(result),  amrex::get<10>(result), amrex::get<11>(result),
-        amrex::get<12>(result)};
-    amrex::ParallelDescriptor::ReduceRealSum(sums, 13);
-    const double sum_rho            = sums[0];
-    const double sum_rho_w          = sums[1];
-    const double sum_rho_a_kin      = sums[2];
-    const double sum_rho_a_kin_w    = sums[3];
-    const double sum_rho_a_grad     = sums[4];
-    const double sum_rho_a_grad_w   = sums[5];
-    const double sum_rho_r_kin      = sums[6];
-    const double sum_rho_r_kin_w    = sums[7];
-    const double sum_rho_r_grad     = sums[8];
-    const double sum_rho_r_grad_w   = sums[9];
-    const double sum_rho_r_mass     = sums[10];
-    const double sum_rho_r_mass_w   = sums[11];
-    const double sum_w              = sums[12];
+        amrex::get<12>(result), amrex::get<13>(result)};
+    amrex::ParallelDescriptor::ReduceRealSum(sums, 14);
 
+    TotalEnergySums out{};
+    out.sum_rho          = sums[0];
+    out.sum_rho_w        = sums[1];
+    out.sum_rho_a_kin    = sums[2];
+    out.sum_rho_a_kin_w  = sums[3];
+    out.sum_rho_a_grad   = sums[4];
+    out.sum_rho_a_grad_w = sums[5];
+    out.sum_rho_r_kin    = sums[6];
+    out.sum_rho_r_kin_w  = sums[7];
+    out.sum_rho_r_grad   = sums[8];
+    out.sum_rho_r_grad_w = sums[9];
+    out.sum_rho_r_mass   = sums[10];
+    out.sum_rho_r_mass_w = sums[11];
+    out.sum_w            = sums[12];
+    out.n_uncovered      = sums[13];
+    return out;
+}
+
+// Single-level convenience wrapper -- the exact prior `compute_total_energy`
+// behaviour (no masking, `n_cells_total` is the level's own domain point
+// count), kept so single-level runs (max_level == 0) are bit-for-bit
+// unaffected by Phase 2.
+[[nodiscard]] inline TotalEnergyResult
+compute_total_energy(const amrex::MultiFab &state, amrex::Real dx,
+                     amrex::Real R, amrex::Real lambda, amrex::Real b_inv,
+                     amrex::Real tau, const MaskingParams &screening,
+                     long n_cells_total)
+{
+    const TotalEnergySums sums = compute_total_energy_sums(
+        state, dx, R, lambda, b_inv, tau, screening, nullptr);
     const auto n_total_d = static_cast<double>(n_cells_total);
 
     TotalEnergyResult out{};
     out.n_total    = n_total_d;
-    out.n_unmasked = sum_w;
-    out.rho_tot_unscreened            = sum_rho / n_total_d;
-    out.rho_axion_kinetic_unscreened  = sum_rho_a_kin / n_total_d;
-    out.rho_axion_gradient_unscreened = sum_rho_a_grad / n_total_d;
-    out.rho_radial_kinetic_unscreened  = sum_rho_r_kin / n_total_d;
-    out.rho_radial_gradient_unscreened = sum_rho_r_grad / n_total_d;
-    out.rho_radial_mass_unscreened     = sum_rho_r_mass / n_total_d;
-    if (sum_w > 0.0)
+    out.n_unmasked = sums.sum_w;
+    out.rho_tot_unscreened            = sums.sum_rho / n_total_d;
+    out.rho_axion_kinetic_unscreened  = sums.sum_rho_a_kin / n_total_d;
+    out.rho_axion_gradient_unscreened = sums.sum_rho_a_grad / n_total_d;
+    out.rho_radial_kinetic_unscreened  = sums.sum_rho_r_kin / n_total_d;
+    out.rho_radial_gradient_unscreened = sums.sum_rho_r_grad / n_total_d;
+    out.rho_radial_mass_unscreened     = sums.sum_rho_r_mass / n_total_d;
+    if (sums.sum_w > 0.0)
     {
-        out.rho_tot_screened            = sum_rho_w / sum_w;
-        out.rho_axion_kinetic_screened  = sum_rho_a_kin_w / sum_w;
-        out.rho_axion_gradient_screened = sum_rho_a_grad_w / sum_w;
-        out.rho_radial_kinetic_screened  = sum_rho_r_kin_w / sum_w;
-        out.rho_radial_gradient_screened = sum_rho_r_grad_w / sum_w;
-        out.rho_radial_mass_screened     = sum_rho_r_mass_w / sum_w;
+        out.rho_tot_screened            = sums.sum_rho_w / sums.sum_w;
+        out.rho_axion_kinetic_screened  = sums.sum_rho_a_kin_w / sums.sum_w;
+        out.rho_axion_gradient_screened = sums.sum_rho_a_grad_w / sums.sum_w;
+        out.rho_radial_kinetic_screened  = sums.sum_rho_r_kin_w / sums.sum_w;
+        out.rho_radial_gradient_screened = sums.sum_rho_r_grad_w / sums.sum_w;
+        out.rho_radial_mass_screened     = sums.sum_rho_r_mass_w / sums.sum_w;
+    }
+    return out;
+}
+
+// One level's contribution to a composite (cross-level) reduction: its own
+// state (already ghost-filled -- a composite FillPatch for level>0, not a
+// plain FillBoundary, so coarse-fine boundary cells are correct too), dx,
+// and coverage mask (nullptr at the finest level, where nothing covers it).
+struct EnergyLevelInput
+{
+    const amrex::MultiFab *state{nullptr};
+    amrex::Real dx{0.0};
+    const amrex::iMultiFab *mask{nullptr};
+};
+
+// Milestone-2 Phase 2: the composite hierarchy analogue of compute_total_
+// energy. Each level's raw sums are weighted by that level's own comoving
+// cell volume (dx^3) before being added across levels -- not by cell count,
+// which would silently overweight finer levels (more, smaller cells) --
+// then normalised once at the end. See TotalEnergyResult's own comment for
+// why n_total/n_unmasked are volumes here, not counts.
+[[nodiscard]] inline TotalEnergyResult
+compute_composite_total_energy(const std::vector<EnergyLevelInput> &levels,
+                               amrex::Real R, amrex::Real lambda,
+                               amrex::Real b_inv, amrex::Real tau,
+                               const MaskingParams &screening)
+{
+    double acc[12] = {0.0};
+    double acc_n_total    = 0.0;
+    double acc_n_unmasked = 0.0;
+
+    for (const EnergyLevelInput &lvl : levels)
+    {
+        const TotalEnergySums sums = compute_total_energy_sums(
+            *lvl.state, lvl.dx, R, lambda, b_inv, tau, screening, lvl.mask);
+        const double vol = static_cast<double>(lvl.dx) *
+                          static_cast<double>(lvl.dx) *
+                          static_cast<double>(lvl.dx);
+        acc[0] += sums.sum_rho * vol;
+        acc[1] += sums.sum_rho_w * vol;
+        acc[2] += sums.sum_rho_a_kin * vol;
+        acc[3] += sums.sum_rho_a_kin_w * vol;
+        acc[4] += sums.sum_rho_a_grad * vol;
+        acc[5] += sums.sum_rho_a_grad_w * vol;
+        acc[6] += sums.sum_rho_r_kin * vol;
+        acc[7] += sums.sum_rho_r_kin_w * vol;
+        acc[8] += sums.sum_rho_r_grad * vol;
+        acc[9] += sums.sum_rho_r_grad_w * vol;
+        acc[10] += sums.sum_rho_r_mass * vol;
+        acc[11] += sums.sum_rho_r_mass_w * vol;
+        acc_n_total    += sums.n_uncovered * vol;
+        acc_n_unmasked += sums.sum_w * vol;
+    }
+
+    TotalEnergyResult out{};
+    out.n_total    = acc_n_total;
+    out.n_unmasked = acc_n_unmasked;
+    out.rho_tot_unscreened            = acc[0] / acc_n_total;
+    out.rho_axion_kinetic_unscreened  = acc[2] / acc_n_total;
+    out.rho_axion_gradient_unscreened = acc[4] / acc_n_total;
+    out.rho_radial_kinetic_unscreened  = acc[6] / acc_n_total;
+    out.rho_radial_gradient_unscreened = acc[8] / acc_n_total;
+    out.rho_radial_mass_unscreened     = acc[10] / acc_n_total;
+    if (acc_n_unmasked > 0.0)
+    {
+        out.rho_tot_screened            = acc[1] / acc_n_unmasked;
+        out.rho_axion_kinetic_screened  = acc[3] / acc_n_unmasked;
+        out.rho_axion_gradient_screened = acc[5] / acc_n_unmasked;
+        out.rho_radial_kinetic_screened  = acc[7] / acc_n_unmasked;
+        out.rho_radial_gradient_screened = acc[9] / acc_n_unmasked;
+        out.rho_radial_mass_screened     = acc[11] / acc_n_unmasked;
     }
     return out;
 }

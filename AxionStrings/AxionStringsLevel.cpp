@@ -14,6 +14,73 @@
 #include "VelocityKernel.hpp"
 #include "XiFormula.hpp"
 
+#include <AMReX_MultiFabUtil.H>
+
+#include <utility>
+#include <vector>
+
+namespace
+{
+// Milestone-2 Phase 2 (2026-09-19, with the user): one level's contribution
+// to the composite (cross-level) diagnostics -- a genuinely ghost-filled
+// (composite FillPatch, not a plain FillBoundary) copy of its state, and
+// the coverage mask marking cells a finer level already accounts for
+// (`has_mask` false at the finest level, where nothing covers it).
+struct CompositeLevelData
+{
+    amrex::MultiFab state;
+    amrex::iMultiFab mask;
+    amrex::Real dx{0.0};
+    bool has_mask{false};
+};
+
+// Gathers ghost-filled state + coverage mask for every level 0..finest_level,
+// all at the same synchronised `time` -- only meaningful when called from
+// level 0's own specific_post_timestep(), the point at which subcycled AMR
+// guarantees every level has caught up to the same simulation time.
+//
+// Ghost cells come from amrex::AmrLevel::FillPatch (composite, quartic-
+// interpolated across a coarse-fine boundary -- the same interpolation the
+// evolution itself uses), not a plain FillBoundary: FillBoundary only
+// exchanges same-level/periodic-neighbour data, so a level's own ghost
+// cells beyond a coarse-fine boundary would otherwise be stale, biasing
+// exactly the cells nearest a refinement boundary -- precisely the kind of
+// resolution-correlated systematic conventions.md sec.11 warns AMR can
+// introduce if not handled carefully.
+std::vector<CompositeLevelData>
+gather_composite_levels(amrex::Amr &parent, int state_index, amrex::Real time,
+                        int n_ghost)
+{
+    const int finest_level = parent.finestLevel();
+    std::vector<CompositeLevelData> out;
+    out.reserve(static_cast<std::size_t>(finest_level) + 1);
+
+    for (int l = 0; l <= finest_level; ++l)
+    {
+        amrex::AmrLevel &lev = parent.getLevel(l);
+
+        CompositeLevelData data{};
+        data.dx = lev.Geom().CellSize(0);
+        data.state.define(lev.boxArray(), lev.DistributionMap(), NUM_VARS,
+                          n_ghost);
+        amrex::AmrLevel::FillPatch(lev, data.state, n_ghost, time,
+                                   state_index, 0, NUM_VARS);
+
+        if (l < finest_level)
+        {
+            const amrex::AmrLevel &fine_lev = parent.getLevel(l + 1);
+            data.mask =
+                amrex::makeFineMask(lev.boxArray(), lev.DistributionMap(),
+                                    fine_lev.boxArray(), amrex::IntVect(2),
+                                    /*crse_value=*/1, /*fine_value=*/0);
+            data.has_mask = true;
+        }
+        out.push_back(std::move(data));
+    }
+    return out;
+}
+} // namespace
+
 void AxionStringsLevel::variableSetUp()
 {
     BL_PROFILE("AxionStringsLevel::variableSetUp()");
@@ -495,22 +562,17 @@ void AxionStringsLevel::specific_post_timestep()
     }
 
     // count_plaquettes reads the (i+1,j+1,k+1) neighbours of every valid
-    // cell, so needs at least 1 valid ghost cell first.
+    // cell, so needs at least 1 valid ghost cell first. Kept for the
+    // spectrum path below, which stays level-0-only (per the user's own
+    // established policy -- the spectrum is only meaningful on the
+    // coarsest grid points) and so still reads state_new directly.
     state_new.FillBoundary(Geom().periodicity());
-
-    const PlaquetteCounts counts = count_plaquettes(state_new);
 
     const double dx              = Geom().CellSize(0);
     const double L_tilde         = Geom().ProbLength(0);
     const double a_inv           = s_background.a_inv;
-
-    // xi from pierced plaquettes (conventions.md sec.8); xi_weighted is the
-    // winding-weighted variant (sec.12). Moore's trick needs an extra
-    // H0^-2 factor here (sec.8) -- not yet implemented, see docs/STATUS.md.
-    const double xi_plain = xi_from_plaquette_count(
-        static_cast<double>(counts.n_p_plain), dx, L_tilde, a_inv, tau);
-    const double xi_weighted = xi_from_plaquette_count(
-        static_cast<double>(counts.n_p_weighted), dx, L_tilde, a_inv, tau);
+    const double level0_n_cells =
+        static_cast<double>(Geom().Domain().numPts());
 
     // Round-off cross-check from task 1.3: m_r/H measured from the code
     // (H_over_mr_direct, from R, R' and lambda as the RHS actually
@@ -519,32 +581,93 @@ void AxionStringsLevel::specific_post_timestep()
     const amrex::Real h_over_mr_closed =
         s_background.H_over_mr_closed_form(tau);
     const amrex::Real m_r_over_h = 1.0 / h_over_mr_direct;
+    const amrex::Real lambda     = s_background.lambda(tau);
+    const amrex::Real m_r_now    = std::sqrt(lambda);
+    const double R_tau           = s_background.R(tau);
+
+    // Milestone-2 Phase 2 (2026-09-19, with the user): xi, energies and
+    // velocities are now composite -- evaluated over the whole AMR
+    // hierarchy, not just level 0, so that once refinement exists its data
+    // is actually used rather than silently ignored. Each level's own field
+    // values feed the *existing*, unchanged field-based mask (the user's
+    // "field-theoretic masking" choice, as opposed to treating refinement
+    // level itself as a proxy for "near a string"); a coverage mask
+    // (amrex::makeFineMask, via gather_composite_levels above) excludes
+    // cells a finer level already accounts for, so every physical point is
+    // counted exactly once, at whichever level actually covers it.
+    //
+    // A cell's plaquette/velocity contribution and a cell's *volume*
+    // contribution both scale with that level's own dx (a coarser cell
+    // represents proportionally more comoving string length or volume per
+    // cell than a finer one) -- so combining levels means weighting by
+    // dx (length: plaquettes, velocity corners) or dx^3 (volume: energy),
+    // never by raw cell/corner count, which would silently overweight
+    // finer levels. n_total/n_unmasked in the result below are therefore
+    // comoving *volumes* now, not counts (see EnergyKernel.hpp).
+    const std::vector<CompositeLevelData> levels =
+        gather_composite_levels(*parent, state_index, a_time_now, 2);
+
+    long n_p_plain_total     = 0;
+    long n_p_weighted_total  = 0;
+    double ell_comoving_plain    = 0.0;
+    double ell_comoving_weighted = 0.0;
+    double velocity_weighted_sum   = 0.0;
+    double velocity_weighted_count = 0.0;
+    long velocity_corners_total    = 0;
+    std::vector<EnergyLevelInput> energy_levels;
+    energy_levels.reserve(levels.size());
+
+    for (const CompositeLevelData &lvl : levels)
+    {
+        const amrex::iMultiFab *mask_ptr = lvl.has_mask ? &lvl.mask : nullptr;
+
+        const PlaquetteCounts counts_l = count_plaquettes(lvl.state, mask_ptr);
+        n_p_plain_total    += counts_l.n_p_plain;
+        n_p_weighted_total += counts_l.n_p_weighted;
+        ell_comoving_plain += (2.0 / 3.0) *
+                             static_cast<double>(counts_l.n_p_plain) * lvl.dx;
+        ell_comoving_weighted +=
+            (2.0 / 3.0) * static_cast<double>(counts_l.n_p_weighted) * lvl.dx;
+
+        const VelocityResult vel_l = compute_velocity_at_pierced_corners(
+            lvl.state, R_tau, tau, s_background.b_inv, m_r_now, mask_ptr);
+        velocity_weighted_sum += vel_l.sum_gamma_sq_v_sq * lvl.dx;
+        velocity_weighted_count += static_cast<double>(vel_l.count) * lvl.dx;
+        velocity_corners_total += vel_l.count;
+
+        energy_levels.push_back(
+            EnergyLevelInput{&lvl.state, lvl.dx, mask_ptr});
+    }
+
+    const PlaquetteCounts counts{n_p_plain_total, n_p_weighted_total};
+
+    // xi from pierced plaquettes (conventions.md sec.8); xi_weighted is the
+    // winding-weighted variant (sec.12). Moore's trick needs an extra
+    // H0^-2 factor here (sec.8) -- not yet implemented, see docs/STATUS.md.
+    // Linear in comoving length (XiFormula.hpp), so summing lengths across
+    // levels first and converting once is exact, not an approximation.
+    const double xi_plain =
+        xi_from_comoving_length(ell_comoving_plain, L_tilde, a_inv, tau);
+    const double xi_weighted =
+        xi_from_comoving_length(ell_comoving_weighted, L_tilde, a_inv, tau);
 
     // Energy (conventions.md sec.10, milestone-1.md task 1.8): rho_tot
     // (the sec.10 aggregate formula only -- the sec.12 radial/axion/
     // interaction split is not yet implemented, see docs/STATUS.md) and the
-    // axion kinetic energy, both screened and unscreened. FourthOrder-
-    // Derivatives::diff1 needs a 2-cell-wide stencil; the FillBoundary
-    // above already covers it (state's ghost count is >=3 by default, for
-    // the 4th-order Laplacian in the RHS).
-    const amrex::Real lambda = s_background.lambda(tau);
-    const long n_cells_total = Geom().Domain().numPts();
-    const TotalEnergyResult energy =
-        compute_total_energy(state_new, dx, s_background.R(tau), lambda,
-                             s_background.b_inv, tau, s_energy_masking,
-                             n_cells_total);
+    // axion kinetic energy, both screened and unscreened.
+    const TotalEnergyResult energy = compute_composite_total_energy(
+        energy_levels, R_tau, lambda, s_background.b_inv, tau,
+        s_energy_masking);
 
     // String velocities (conventions.md sec.8, milestone-1.md task 1.10 --
     // velocities only, not curvature or loops, both deferred as more
     // involved per the user). gamma^2 v^2 evaluated at the corners of
-    // every pierced plaquette, averaged over the network.
-    const amrex::Real m_r_now = std::sqrt(lambda);
-    const VelocityResult velocity = compute_velocity_at_pierced_corners(
-        state_new, s_background.R(tau), tau, s_background.b_inv, m_r_now);
-    const double mean_gamma_sq_v_sq =
-        (velocity.count > 0)
-            ? velocity.sum_gamma_sq_v_sq / static_cast<double>(velocity.count)
-            : 0.0;
+    // every pierced plaquette, length-weighted-averaged over the network
+    // (same dx-weighting rationale as xi/energy above).
+    const double mean_gamma_sq_v_sq = (velocity_weighted_count > 0.0)
+                                          ? velocity_weighted_sum /
+                                                velocity_weighted_count
+                                          : 0.0;
     const double mean_gamma = std::sqrt(1.0 + mean_gamma_sq_v_sq);
 
     // Core-energy diagnostics (2026-09-17, with the user): the screened/
@@ -563,13 +686,18 @@ void AxionStringsLevel::specific_post_timestep()
     // raw screened/unscreened component, so both this and any other
     // combination remain reconstructable afterwards without having picked
     // one formula in advance.
+    //
+    // n_total/n_unmasked are now comoving *volumes* (Phase 2), so
+    // sum_core_rho_tot below is already a comoving energy -- no separate
+    // dx^3 multiply, unlike the single-level formula this replaces (the
+    // product is unchanged, only how it is factored: dx^3 is now baked
+    // into n_total/n_unmasked instead of applied again downstream).
     const double sum_core_rho_tot =
         energy.n_total * energy.rho_tot_unscreened -
         energy.n_unmasked * energy.rho_tot_screened;
     const double sum_unmasked_tail =
         energy.n_unmasked * (energy.rho_axion_gradient_screened -
                              energy.rho_axion_kinetic_screened);
-    const double dx3 = dx * dx * dx;
 
     // Comoving/physical normalisation for tension (energy per unit length),
     // reworked 2026-09-18 with the user, deviating from a straight reading
@@ -579,12 +707,8 @@ void AxionStringsLevel::specific_post_timestep()
     // rho_tot_pointwise (Energy.hpp) is the genuine PHYSICAL energy
     // density (energy per physical volume) -- derived directly from the
     // canonically normalised phi Lagrangian, dt physical, grad physical.
-    // Lattice points sit on a uniform comoving grid, so at fixed tau every
-    // cell has the same physical volume (R dx)^3 and the arithmetic mean
-    // over points IS the physical-volume average -- sum_core_rho_tot above
-    // is dimensionless-count x rho, so the physical ENERGY in the core
-    // cells is R(tau)^3 * dx^3 * sum_core_rho_tot, not dx^3 * sum_core_rho_tot:
-    // the previous formula omitted this R^3.
+    // sum_core_rho_tot above is a comoving-volume integral of rho, so the
+    // physical ENERGY in the core cells is R(tau)^3 * sum_core_rho_tot.
     //
     // The previous string_length_in_box = 2*Geom().ProbLength(2) hardcoded
     // "exactly 2 straight strings spanning the box in z", correct only for
@@ -606,18 +730,16 @@ void AxionStringsLevel::specific_post_timestep()
     // re-validation rather than chased now.
     //
     // Physical energy / physical length:
-    //   mu = [R^3 dx^3 Sum_core(rho)] / [R * ell_comoving]
-    //      = R^2 dx^3 Sum_core(rho) / ell_comoving,   ell_comoving = (2/3) N_p dx
-    const double R_tau           = s_background.R(tau);
-    const double ell_comoving    = (2.0 / 3.0) * counts.n_p_plain * dx;
+    //   mu = [R^3 Sum_core(rho)] / [R * ell_comoving]
+    //      = R^2 Sum_core(rho) / ell_comoving,   ell_comoving = (2/3) Sum_l N_p_l dx_l
     const double tension_core_only =
-        (ell_comoving > 0.0)
-            ? (R_tau * R_tau) * dx3 * sum_core_rho_tot / ell_comoving
+        (ell_comoving_plain > 0.0)
+            ? (R_tau * R_tau) * sum_core_rho_tot / ell_comoving_plain
             : 0.0;
     const double tension_core_plus_tail =
-        (ell_comoving > 0.0)
-            ? (R_tau * R_tau) * dx3 * (sum_core_rho_tot + sum_unmasked_tail) /
-                  ell_comoving
+        (ell_comoving_plain > 0.0)
+            ? (R_tau * R_tau) * (sum_core_rho_tot + sum_unmasked_tail) /
+                  ell_comoving_plain
             : 0.0;
 
     amrex::Print() << "  [AxionStrings] tau = " << tau
@@ -656,7 +778,7 @@ void AxionStringsLevel::specific_post_timestep()
                    << "\n"
                    << "    <gamma^2 v^2> = " << mean_gamma_sq_v_sq
                    << "  <gamma> = " << mean_gamma
-                   << "  N_corners = " << velocity.count << "\n";
+                   << "  N_corners = " << velocity_corners_total << "\n";
 
     // Restart-safe output bookkeeping (2026-09-18, fixing a bug flagged
     // earlier): a genuine restart is detected via amr.restart (not our own
@@ -724,7 +846,7 @@ void AxionStringsLevel::specific_post_timestep()
         static_cast<amrex::Real>(energy.n_unmasked),
         static_cast<amrex::Real>(mean_gamma_sq_v_sq),
         static_cast<amrex::Real>(mean_gamma),
-        static_cast<amrex::Real>(velocity.count),
+        static_cast<amrex::Real>(velocity_corners_total),
         static_cast<amrex::Real>(tension_core_only),
         static_cast<amrex::Real>(tension_core_plus_tail)};
     network_scalars_file.write_time_data_line(data_row);
@@ -759,14 +881,20 @@ void AxionStringsLevel::specific_post_timestep()
             // was fed to the FFT -- the honest way to get <(masked
             // a_dot)^2>, rather than trying to back it out of
             // axion_kinetic_energy's own f_a^2/2 prefactors (error-prone;
-            // avoided deliberately). None's weight is 1 everywhere, so
-            // energy.n_total (not n_unmasked) is the right divisor for
-            // both cases.
+            // avoided deliberately). None's weight is 1 everywhere, so a
+            // plain point count is the right divisor for both cases --
+            // level0_n_cells, not energy.n_total: the spectrum stays
+            // level-0-only (Phase 2 made energy/xi/velocity composite, but
+            // this FFT buffer is still built from state_new alone), and
+            // since Phase 2, energy.n_total is a *composite comoving
+            // volume* across the whole hierarchy, not level 0's own point
+            // count -- using it here would silently mismatch the buffer's
+            // own size once refinement exists.
             const double sum_sq = static_cast<double>(amrex::MultiFab::Dot(
                 a_dot_buffer, 0, a_dot_buffer, 0, 1, 0));
-            const double real_space_mean_sq = sum_sq / energy.n_total;
+            const double real_space_mean_sq = sum_sq / level0_n_cells;
 
-            const double n_total_sq = energy.n_total * energy.n_total;
+            const double n_total_sq = level0_n_cells * level0_n_cells;
             // Parseval (conventions.md sec.9, verified with the user): a
             // spatial *average* of a squared real field equals
             // Sum_p|X_p|^2 / N_total^2 (one factor of N_total from the

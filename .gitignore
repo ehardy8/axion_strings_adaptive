@@ -16,6 +16,11 @@ axion_spectrum.dat*
 axion_projection.dat*
 parameters_and_version.txt
 Backtrace.*
+AxionStrings/loop_scalars.dat.old.*
+
+# Scratch run directories (results are captured in analysis/ plots instead)
+AxionStrings/runs/
+AxionStrings/runs2/
 
 # macOS
 .DS_Store

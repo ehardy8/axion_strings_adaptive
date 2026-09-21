@@ -1,0 +1,123 @@
+# Full mid-sized end-to-end test (2026-09-19, with the user): physical
+# strings (c0=0), relaxed initial conditions, 3 refinement levels
+# (N_base=128, N_effective=1024), spectrum + screened energies on, to
+# extract xi/tension/energies/spectrum from a properly-relaxed run and
+# exercise the full Phase 0-3 AMR pipeline at a hierarchy depth (4 levels:
+# 0-3) deeper than anything validated so far.
+#
+# N_base=128 (=N_effective/2^max_level) is the same *integer* as
+# params_amr_validation_128.txt/params_calibration_128.txt, but NOT the
+# same base grid: compute_general_box_plan gives tau_f = L_tilde =
+# sqrt(N_effective/(N1*N2)) for a_inv=2,c=0 -- doubling N_effective
+# (512->1024) takes tau_f/L_tilde from 22.627 to 32 (sqrt(2), not 2x), so
+# dx_base is *coarser* here (0.25, vs 0.176777 for max_level=2) even
+# though N_base is still 128 grid points. pre_evolution.gamma (=1/dx_base
+# by convention) is 4.0 here, NOT the old 5.65685 -- caught this by reading
+# the run's own startup box-plan printout (geometry.prob_extent=32, not
+# the expected-by-hand 22.627) before committing to the full run.
+#
+# Level-addition thresholds by hand (log(m_r/H) at tau_f = 2*ln(32) =
+# 6.9315, counted back by Delta_log=ln(4)=1.3863 per level): level 1 at
+# 2.773, level 2 at 4.159, level 3 at 5.545.
+#
+# Timing calibration (params_calibration_128.txt, this session, 8 ranks,
+# spectrum+masking on, max_level=2/N=512 -- a *different*, smaller box
+# than this file, so only qualitatively indicative here): level 0 alone
+# ~1520 code-units/h; level 1 active (~16-21% refined) steady-state ~235
+# units/h; level 2 active and growing ~124 units/h and declining. This
+# file's own box is bigger (L_tilde=32 vs 22.627) and one level deeper, so
+# its wall-clock cost was not measured directly before launch -- monitored
+# live instead, aiming for very roughly 30 minutes.
+#
+# INVESTIGATED FURTHER (2026-09-19, at the user's explicit request not to
+# let this go unexamined): the ~100% level-1 tagging this config showed is
+# real and reproducible, and is now understood empirically, though not yet
+# down to a first-principles mechanism. Five controlled tests (see
+# docs/STATUS.md's Milestone-2 "Known issues" entry for the full writeup):
+#   1. Reproduced the identical pathology at max_level=2 (not 3) by
+#      matching this file's (dx_base, level-1 threshold) exactly -- rules
+#      out hierarchy depth as the cause.
+#   2. Raising log_mr_over_h_i to restore the schedule-derived resolution
+#      margin (N2_0(tau_i), points-per-core-width on the base grid at
+#      handoff) from 1.47 to 2.43 only partially helped (100% -> 74%) --
+#      margin matters but is not the whole story.
+#   3. A control at dx_base=0.158 (validated, healthy) with an *equal*
+#      N2_0(tau_i)=2.33 to test 2's 2.43 stayed healthy (~27%) -- so two
+#      configs with essentially the same schedule-derived margin gave
+#      wildly different outcomes; margin alone does not predict this.
+#   4. Decoupling pre_evolution.gamma from dx_base (testing a "healthy"
+#      absolute gamma=6.0 while holding dx_base=0.25 and the Fourier IC's
+#      own bandwidth fixed) did not help either (still ~100%) -- rules out
+#      gamma_pre's role in fat-mode relaxation damping as the sole cause.
+#   5. pre_evolution_L_tilde (a different formula, sec.7) is confirmed
+#      unused in this code path (FYI-only printout) -- rules out a unit
+#      mismatch there.
+# The one factor common to every failing case and absent from every
+# healthy one, across all five tests, is dx_base itself: every failure
+# used dx_base=0.25; every success used dx_base <= 0.177. The leading
+# untested hypothesis is that a coarser dx_base changes the *relative*
+# weight of the gradient-energy term (~1/dx^2 via FourthOrderDerivatives)
+# against the mass term (dx-independent) in the relaxation EOM, changing
+# how the same initial noise pattern evolves -- not yet confirmed. Given
+# N2=1 is already flagged elsewhere (docs/STATUS.md, Phase 1) as "the
+# project's established aggressive-minimum convention," this may point at
+# N2=1 being marginal more broadly, with dx_base=0.25 simply being the
+# first configuration to fall on the wrong side of that margin. Treat
+# dx_base >~ 0.2 as suspect until this is resolved.
+#
+# FOLLOW-UP (same day, prompted by the user asking whether a stronger cut
+# on the initial k_max would help): yes, substantially -- lowering
+# k_max_over_mr from 64 to 4 (same N_base=128/dx_base=0.25/max_level=3)
+# took level-1 onset tagging from 100% to 47%, declining to 35% (matching
+# the validated configs' ~25-40%). But k_max_over_mr=0.5 gave N_p=0 at
+# the very first xi check -- no strings ever nucleated at all -- so there
+# is a real floor. See docs/STATUS.md's Known Issues entry for the full
+# write-up, including why "start with less noise" is NOT quite the right
+# mechanism (the genuinely healthy N_base=160 config starts relaxation at
+# an even HIGHER xi~25-33 than this file's failing xi~14-18, yet still
+# collapses cleanly) -- the leading hypothesis is that k_max_over_mr=64
+# saturates N_base=128's own Nyquist limit (N_base/2 in FFT-index units),
+# so unlike N_base=160 (where 64 is a real, enforced band-limit at 80% of
+# Nyquist), *every* representable mode gets populated, adding an
+# incoherent lattice-noise component on top of the genuine string tangle
+# that may not collapse via ordinary loop annihilation the way the
+# coherent, large-scale windings do. Updated guidance: keep
+# k_max_over_mr a handful of units (this session's tests bracket a
+# working window around 2-8), and treat k_max_over_mr approaching or
+# exceeding N_base/2 as a second red flag alongside dx_base >~ 0.2.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+amr.max_level = 3
+amr.max_grid_size   = 16
+amr.blocking_factor = 16
+amr.n_error_buf     = 2
+amr.regrid_int      = 2
+
+geometry.is_periodic = 1 1 1
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = -1
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 0.0 # physical
+
+axion_strings.log_mr_over_h_i = 2.0
+
+axion_strings.N  = 1024
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+axion_strings.ic_mode = fourier_relaxed
+axion_strings.pre_evolution.gamma = 4.0
+axion_strings.pre_evolution.xi_target = 1.0
+axion_strings.pre_evolution.k_max_over_mr        = 64
+axion_strings.pre_evolution.mean_square_variance = 0.5
+axion_strings.pre_evolution.seed = 42
+
+axion_strings.masking.scheme = B
+axion_strings.compute_spectrum = 1
+
+axion_strings.output_first_log_mr_over_h = 2.0
+axion_strings.output_delta_log_mr_over_h = 0.2

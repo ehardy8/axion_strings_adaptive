@@ -1,0 +1,50 @@
+# Visualization test (2026-09-19, with the user): N_effective=256,
+# max_level=2 (N_base=64), physical strings, to produce an AMReX plotfile
+# late in the run for a picture of the energy density with the AMR grid
+# structure overlaid (yt's annotate_grids()), showing refinement visually.
+#
+# Box plan by hand: L_tilde=tau_f=16, dx_finest=0.0625, dx_base=0.25,
+# N_base=64, gamma=1/dx_base=4.0. Level thresholds: log(m_r/H)=2.773
+# (level 1), 4.159 (level 2), final log(m_r/H)=5.545.
+#
+# k_max_over_mr=4 (not the old default 64): per this session's
+# investigation (docs/STATUS.md Known Issues), k_max_over_mr=64 at this
+# dx_base=0.25 causes near-100% spurious tagging; k_max_over_mr~4-5 is the
+# best currently-known value at this box configuration.
+#
+# amr.plot_int writes an AMReX plotfile (full multi-level state) every 20
+# coarse steps, so we have several snapshots to choose a good late one
+# from without needing to guess exactly when the run finishes.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = 20
+amr.max_level = 2
+amr.max_grid_size   = 16
+amr.blocking_factor = 16
+amr.n_error_buf     = 2
+amr.regrid_int      = 2
+
+geometry.is_periodic = 1 1 1
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = -1
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 0.0 # physical
+
+axion_strings.log_mr_over_h_i = 2.0
+
+axion_strings.N  = 256
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+axion_strings.ic_mode = fourier_relaxed
+axion_strings.pre_evolution.gamma = 4.0
+axion_strings.pre_evolution.xi_target = 1.0
+axion_strings.pre_evolution.k_max_over_mr        = 4
+axion_strings.pre_evolution.mean_square_variance = 0.5
+axion_strings.pre_evolution.seed = 42
+
+axion_strings.output_first_log_mr_over_h = 2.0
+axion_strings.output_delta_log_mr_over_h = 0.2

@@ -1,0 +1,66 @@
+# Full mid-sized end-to-end test (2026-09-19, with the user): physical
+# strings (c0=0), relaxed initial conditions, max_level=2 (the depth
+# validated in Phases 1-3), N_base=160 (N_effective=640) -- scaled up from
+# the already-calibrated N_base=128/N_effective=512 config to fill a
+# ~30 minute budget, while staying at a *validated* hierarchy depth rather
+# than jumping to an untested one.
+#
+# An earlier attempt at max_level=3 (N_effective=1024, same N_base=128)
+# was abandoned this session: L_tilde/tau_f scale as sqrt(N_effective)
+# (compute_general_box_plan), not independently of it as first assumed, so
+# the naive box got a much bigger comoving domain (L_tilde=32 vs 22.627)
+# with a correspondingly coarser dx_base -- and even after correcting
+# pre_evolution.gamma to match (4.0, not the old 5.65685), the handed-off
+# relaxed field triggered ~100% tagging at level 1 almost immediately,
+# unlike the ~37% seen validating max_level=2. Not fully diagnosed (most
+# likely relaxation quality relative to the *finer* absolute resolution
+# newly exposed by a deeper hierarchy, not a tagger bug), but not chased
+# further under a time budget -- flagged here for a follow-up look rather
+# than risking another unclean run.
+#
+# Box plan by hand (N_eff=640, N1=N2=1, a_inv=2, c=0, max_level=2):
+# tau_f=L_tilde=25.298, dx_finest=0.03953, N_base=160, dx_base=0.15811,
+# gamma=1/dx_base=6.32456; level thresholds log(m_r/H)=3.689 (level 1),
+# 5.075 (level 2), log_at_tau_f=6.461.
+#
+# Timing: N_base=128/max_level=2/N=512 calibrated this session at ~10-11
+# minutes (8 ranks, spectrum+masking on). N_base=160 is a linear 1.25x
+# scale-up (volume 1.953x, ~1.25x more steps for the smaller dx) --
+# estimated very roughly 25-30 minutes; sanity-checked for a short window
+# before committing to the full run.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+amr.max_level = 2
+amr.max_grid_size   = 16
+amr.blocking_factor = 16
+amr.n_error_buf     = 2
+amr.regrid_int      = 2
+
+geometry.is_periodic = 1 1 1
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = -1
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 0.0 # physical
+
+axion_strings.log_mr_over_h_i = 2.0
+
+axion_strings.N  = 640
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+axion_strings.ic_mode = fourier_relaxed
+axion_strings.pre_evolution.gamma = 6.324555320336758
+axion_strings.pre_evolution.xi_target = 1.0
+axion_strings.pre_evolution.k_max_over_mr        = 64
+axion_strings.pre_evolution.mean_square_variance = 0.5
+axion_strings.pre_evolution.seed = 42
+
+axion_strings.masking.scheme = B
+axion_strings.compute_spectrum = 1
+
+axion_strings.output_first_log_mr_over_h = 2.0
+axion_strings.output_delta_log_mr_over_h = 0.2

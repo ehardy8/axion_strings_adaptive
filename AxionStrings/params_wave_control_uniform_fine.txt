@@ -1,0 +1,30 @@
+# Second control for params_wave_boundary_test.txt (2026-09-19, with the
+# user): the same wave packet on a UNIFORM single-level grid at the FINE
+# resolution (dx=0.05, matching the boundary test's fine side) -- the
+# "fully resolved everywhere" baseline.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+amr.max_level = 0
+amr.n_cell = 640 32 32
+amr.max_grid_size   = 640
+amr.blocking_factor = 16
+
+geometry.is_periodic = 1 1 1
+geometry.prob_extent = 32.0 1.6 1.6
+geometry.center      = 16.0 0.8 0.8
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = 2000
+evolution.stop_time = -1
+
+axion_strings.flat_space = 1
+axion_strings.flat.m_r = 1.0
+axion_strings.flat.output_cadence_steps = 10
+
+axion_strings.ic_mode = wave_packet_test
+axion_strings.wave_packet_x0         = 6.4
+axion_strings.wave_packet_sigma      = 1.0
+axion_strings.wave_packet_wavelength = 0.4
+axion_strings.wave_packet_amplitude  = 0.01

@@ -1,0 +1,35 @@
+# Control for params_wave_boundary_test.txt (2026-09-19, with the user):
+# the SAME wave packet, on a UNIFORM single-level grid at the COARSE
+# resolution (dx=0.1, matching the boundary test's coarse side) -- no
+# refinement, so no coarse-fine boundary exists at all. If total energy
+# is well conserved here despite the wave being just as marginally
+# resolved (4 points/wavelength) as it is on the coarse side of the
+# boundary test, that isolates the boundary test's large energy loss as
+# specifically a coarse-fine *interface* effect, not simply a consequence
+# of coarse resolution on its own.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+amr.max_level = 0
+amr.n_cell = 320 16 16
+amr.max_grid_size   = 320
+amr.blocking_factor = 16
+
+geometry.is_periodic = 1 1 1
+geometry.prob_extent = 32.0 1.6 1.6
+geometry.center      = 16.0 0.8 0.8
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = 1000
+evolution.stop_time = -1
+
+axion_strings.flat_space = 1
+axion_strings.flat.m_r = 1.0
+axion_strings.flat.output_cadence_steps = 5
+
+axion_strings.ic_mode = wave_packet_test
+axion_strings.wave_packet_x0         = 6.4
+axion_strings.wave_packet_sigma      = 1.0
+axion_strings.wave_packet_wavelength = 0.4
+axion_strings.wave_packet_amplitude  = 0.01

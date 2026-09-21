@@ -301,6 +301,79 @@ void AxionStringsLevel::initData()
         return;
     }
 
+    if (ic_mode == "wave_packet_test")
+    {
+        // Flat-space AMR coarse-fine boundary test (2026-09-19, with the
+        // user): "what happens when an axion wave with wavelength large
+        // enough to fit on a refined grid but too small for a coarser
+        // grid meets a boundary between refinement levels -- does it
+        // bounce back or is the energy lost?" A localised Gaussian-
+        // enveloped wave packet in the phase (psi2) direction, built to
+        // be an (approximate) exact right-mover of the *linearised*
+        // theory around the vacuum psi1=R_i, psi2=0: expanding the EOM
+        // there, the potential term is second order in the psi2
+        // perturbation (psi1 fixed at R_i to first order), so the phase
+        // direction is exactly massless/dispersionless (a Goldstone mode)
+        // -- group velocity 1 for every k, no curvature term in flat
+        // space either. So in the continuum this envelope neither
+        // spreads nor changes shape as it travels; any distortion,
+        // reflection or attenuation seen numerically is a genuine
+        // discretisation effect of the grid it is on, not physics --
+        // exactly what this test isolates. Meant to be run with a fixed
+        // (non-regridding) two-level grid, e.g. via amr.initial_grid_file
+        // + amr.regrid_int=-1, so the coarse-fine boundary sits still and
+        // its effect on the packet can be watched cleanly.
+        //
+        // g(u) = A exp(-u^2/(2 sigma^2)) cos(k u), psi2(x,0) = g(x-x0),
+        // Pi2(x,0) = d/dt[g(x-x0-t)]|_{t=0} = -g'(x-x0) for a wave moving
+        // in +x at speed 1 -- the only direction this IC supports (kept
+        // deliberately 1D-like/x-only, matching the test's own geometry).
+        const amrex::Real R_i = s_flat_background.R(0.0);
+
+        amrex::Real x0 = 0.0;
+        amrex::Real sigma = 1.0;
+        amrex::Real wavelength = 1.0;
+        amrex::Real amplitude = 0.01;
+        amrex::ParmParse pp("axion_strings");
+        pp.get("wave_packet_x0", x0);
+        pp.get("wave_packet_sigma", sigma);
+        pp.get("wave_packet_wavelength", wavelength);
+        pp.queryAdd("wave_packet_amplitude", amplitude);
+        if (sigma <= 0.0 || wavelength <= 0.0)
+        {
+            amrex::Abort("axion_strings.wave_packet_sigma and "
+                        "_wavelength must both be > 0");
+        }
+        const amrex::Real k_wave = 2.0 * M_PI / wavelength;
+
+        const auto dx      = Geom().CellSizeArray();
+        const auto prob_lo = Geom().ProbLoArray();
+
+        amrex::MultiFab &state_new = get_new_data(state_index);
+        auto const &arrs           = state_new.arrays();
+
+        amrex::ParallelFor(
+            state_new, state_new.nGrowVect(),
+            [=] AMREX_GPU_DEVICE(int box_no, int i, int j, int k) noexcept
+            {
+                const amrex::Real x = prob_lo[0] + (i + 0.5) * dx[0];
+                const amrex::Real u = x - x0;
+                const amrex::Real envelope =
+                    std::exp(-(u * u) / (2.0 * sigma * sigma));
+                const amrex::Real cos_ku = std::cos(k_wave * u);
+                const amrex::Real sin_ku = std::sin(k_wave * u);
+
+                arrs[box_no](i, j, k, c_psi1) = R_i;
+                arrs[box_no](i, j, k, c_psi2) = amplitude * envelope * cos_ku;
+                arrs[box_no](i, j, k, c_Pi1)  = 0.0;
+                arrs[box_no](i, j, k, c_Pi2) =
+                    amplitude * envelope *
+                    ((u / (sigma * sigma)) * cos_ku + k_wave * sin_ku);
+            });
+        amrex::Gpu::streamSynchronize();
+        return;
+    }
+
     if (ic_mode == "straight_string_test")
     {
         // T1 (conventions.md sec.13/milestone-1.md task 1.6, plaquette-

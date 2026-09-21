@@ -1,0 +1,61 @@
+# Wavelength ladder, v2 (2026-09-20, with the user, refining the first
+# 3-level study): boundaries moved 1.5x further apart (uniformly scaling
+# the whole geometry) to give more room between interactions, and run
+# long enough to watch reflected energy bounce back and forth around the
+# periodic domain for the marginal/severe cases.
+#
+#   coarse (level 0 only)   x in [0,12) and [60,96)   dx=0.1
+#   intermediate (level 1)  x in [12,60)               dx=0.05
+#   finest (level 2)        x in [24,48)               dx=0.025
+#
+# (previous version: coarse [0,8)/[40,60), intermediate [8,40), finest
+# [16,32) -- every distance here is exactly 1.5x that one.)
+#
+# amr.initial_grid_file (wave_test_grids_3level.txt) fixes both levels;
+# amr.regrid_int=-1 disables all regridding, so both boundaries (x=48 on
+# the way out of finest, x=60 on the way out of intermediate) stay fixed
+# throughout, as does the domain length (96) a fully-reflected wave needs
+# to complete one periodic round trip.
+#
+# Same three wavelengths as before (points/wavelength at the coarsest
+# level = 8/4/2 for comfortable/marginal/severe; sigma=1.5*wavelength):
+#
+#   case       wavelength  sigma
+#   comfortable   0.8       1.2
+#   marginal      0.4       0.6
+#   severe        0.2       0.3
+#
+# Packet starts at x0=36 (finest region centre). Distances: x0->boundary1
+# (48) = 12; boundary1->boundary2 (60) = 12; one full periodic round trip
+# back to boundary1 (the long way, through the coarse region and wrapping
+# at x=0/96) = 96. evolution.max_steps/amr.plot_int are set per case on
+# the command line: comfortable only needs to clear both boundaries
+# cleanly (t~40), marginal/severe are run to t~200 (~2 round trips) to
+# see whether reflected energy bounces back and forth.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.max_level = 2
+amr.n_cell = 960 8 8
+amr.max_grid_size   = 960
+amr.blocking_factor = 8
+amr.n_error_buf     = 2
+amr.regrid_int      = -1
+amr.initial_grid_file = wave_test_grids_3level.txt
+
+geometry.is_periodic = 1 1 1
+geometry.prob_extent = 96.0 0.8 0.8
+geometry.center      = 48.0 0.4 0.4
+
+evolution.dt_multiplier = 0.2
+evolution.stop_time = -1
+
+axion_strings.flat_space = 1
+axion_strings.flat.m_r = 1.0
+axion_strings.flat.output_cadence_steps = 5
+
+axion_strings.ic_mode = wave_packet_test
+axion_strings.wave_packet_x0         = 36.0
+axion_strings.wave_packet_amplitude  = 0.01
+# wave_packet_wavelength / wave_packet_sigma set per case on the command
+# line, likewise evolution.max_steps / amr.plot_int

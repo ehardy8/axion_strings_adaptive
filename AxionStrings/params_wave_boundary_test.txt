@@ -1,0 +1,55 @@
+# AMR coarse-fine boundary test (2026-09-19, with the user): "what happens
+# when an axion wave with wavelength large enough to fit on a refined grid
+# but too small for a coarser grid meets a boundary between refinement
+# levels -- does it bounce back or is the energy lost from the system?"
+#
+# A STATIC (non-regridding) two-level grid: level 1 covers exactly the
+# left half of the domain (x in [0,12.8), amr.initial_grid_file), amr.
+# regrid_int=-1 disables all further regridding, so the coarse-fine
+# boundary at x=12.8 never moves. A localised Gaussian wave packet in the
+# phase (psi2) direction (ic_mode=wave_packet_test) starts well inside
+# the fine region, moving in +x at speed 1 (exact for this direction --
+# the phase mode is massless/dispersionless, see AxionStringsLevel.cpp's
+# own comment on wave_packet_test), heading toward the boundary and into
+# the coarse region beyond.
+#
+# Resolution: dx_fine=0.05, dx_coarse=0.1. wavelength=0.4 -> 8 points per
+# wavelength on the fine grid (well resolved for a 4th-order stencil),
+# 4 points per wavelength on the coarse grid (poorly resolved) --
+# exactly the "fits on the refined grid, not on the coarser one" case.
+#
+# Timing (speed=1 exactly): packet starts at x0=6.4, boundary at x=12.8
+# (distance 6.4, reached at t~6.4); coarse region extends to x=32=0
+# (periodic), a further 19.2 -- reached at t~25.6 if fully transmitted,
+# or back at x0 at t~12.8 if fully reflected. Run to t=20 (1000 steps at
+# dt=0.02) to see the interaction and its aftermath on both sides without
+# periodic wraparound contamination.
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = 25
+amr.max_level = 1
+amr.n_cell = 320 16 16
+amr.max_grid_size   = 320
+amr.blocking_factor = 16
+amr.n_error_buf     = 2
+amr.regrid_int      = -1
+amr.initial_grid_file = wave_test_grids.txt
+
+geometry.is_periodic = 1 1 1
+geometry.prob_extent = 32.0 1.6 1.6
+geometry.center      = 16.0 0.8 0.8
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = 1000
+evolution.stop_time = -1
+
+axion_strings.flat_space = 1
+axion_strings.flat.m_r = 1.0
+axion_strings.flat.output_cadence_steps = 5
+
+axion_strings.ic_mode = wave_packet_test
+axion_strings.wave_packet_x0         = 6.4
+axion_strings.wave_packet_sigma      = 1.0
+axion_strings.wave_packet_wavelength = 0.4
+axion_strings.wave_packet_amplitude  = 0.01

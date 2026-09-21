@@ -535,3 +535,260 @@ readiness (multi-level restart, performance).
   qualitative large-scale behaviour away from the affected boundary (e.g.
   `circular_loop`'s initial collapse trend) is less affected but still not
   fully quantified.
+
+- **Confirmed (2026-09-19, with the user, ahead of moving to cluster-scale
+  runs): a wave whose wavelength is well resolved on a fine level but
+  poorly resolved on the coarser level it borders loses a large fraction
+  of its energy crossing that coarse-fine boundary -- genuinely
+  dissipated, not mostly reflected.** Requested as a small, standalone
+  test before trusting AMR for the real network runs: "does it bounce
+  back or is the energy lost from the system?" New `ic_mode =
+  wave_packet_test` (`AxionStringsLevel.cpp`), a localised Gaussian
+  wave packet in the phase (`psi2`) direction -- exactly massless/
+  dispersionless in the linearised theory around the flat-space vacuum
+  (group velocity 1 for every `k`, no curvature term), so any shape
+  change, reflection or energy loss seen numerically is a genuine
+  discretisation effect, not physics. Run on a **static, non-regridding**
+  two-level grid (`amr.initial_grid_file` for a fixed level-1 box,
+  `amr.regrid_int = -1` to disable all further regridding) so a single,
+  motionless coarse-fine boundary could be studied cleanly -- `dx_fine=
+  0.05` (8 points/wavelength, well resolved) one side, `dx_coarse=0.1`
+  (4 points/wavelength, poorly resolved) the other, `wavelength=0.4`,
+  `params_wave_boundary_test.txt`.
+  **Result**: the packet crosses the boundary essentially undistorted in
+  shape up to the interface, then over a short window (`t~4.4-8.4`, right
+  where the packet actually overlaps the boundary) the domain's total
+  energy (the existing composite `EnergyKernel.hpp` diagnostic, exact,
+  not approximated) drops sharply from `0.1108` to `0.0813` -- **27.6%
+  gone by `t=20`**, most of it in that one crossing window, with only a
+  slow, much smaller (~1-1.5%) continued decline afterward. A 1D `psi2`
+  profile along the propagation axis (`analysis/wave_boundary_test/
+  wave_profiles.png`) shows a clear, coherent **transmitted** packet
+  continuing into the coarse region at the correct speed (though visibly
+  degrading further as it continues to propagate there), and only a
+  *tiny* **reflected** disturbance left behind in the fine region --
+  nothing like a specular bounce.
+  **Controls, to isolate the mechanism** (`params_wave_control_uniform_
+  coarse.txt`/`_fine.txt`, same packet, same duration, single level, no
+  boundary at all): a uniform grid at the *coarse* resolution alone
+  (same 4 points/wavelength) retains **99.15%** of the energy over the
+  same `t=20`; a uniform grid at the *fine* resolution retains **99.96%**
+  (`analysis/wave_boundary_test/wave_energy_comparison.png`). So poor
+  resolution on its own costs ~1%, not ~28% -- the large loss is
+  specifically an artefact of the coarse-fine *interface* (its
+  interpolation/ghost-cell exchange cannot represent content the coarse
+  side has no basis functions for, and that content is mostly discarded
+  rather than reflected or conservatively transferred), not simply a
+  consequence of running part of the domain at coarse resolution.
+  A rough, illustrative region-by-region energy split (`analysis/
+  wave_boundary_test/wave_energy_budget.png`, yt's own 2nd-order
+  gradients -- qualitative only, not the code's exact 4th-order value)
+  is consistent with the above: ~64% of the original energy ends up in
+  the coherent transmitted packet, <1% in the reflected remnant, and the
+  rest genuinely unaccounted for in either region.
+  **Implication for the real network runs**: this is a real, sizeable
+  systematic specifically tied to the coarse-fine boundary itself, for
+  any field content marginally resolved on the coarser side of a
+  refinement jump -- directly the kind of effect conventions.md sec.11's
+  "level-timing systematic" section already flags as "the central AMR
+  risk," now with a concrete, quantified magnitude behind it (~28% of
+  the energy in a marginally-resolved mode, in one boundary crossing).
+  Not yet investigated: whether the buffer-width/regrid-frequency inputs
+  added the same day (`AxionStringsParams.hpp`'s `apply_regrid_buffer_
+  policy`) reduce this (a wider buffer keeps genuinely under-resolved
+  content farther from any coarse-fine boundary at the moment of
+  regridding, but does not by itself change how the boundary treats
+  content that does reach it), nor whether string-network energy content
+  near the tagging threshold is typically well- or poorly-resolved on the
+  coarser side in practice. Flagged here rather than acted on immediately
+  -- a real, now-quantified risk to weigh before relying on deep AMR
+  hierarchies for precision energy/spectrum measurements close to a
+  level boundary.
+
+  **Follow-up (2026-09-20, with the user): a wavelength ladder across
+  three resolution regimes and two successive boundaries, plus spectra.**
+  Requested after the single-boundary result above, since 4 points/
+  wavelength (that test's "coarse" side) turned out to still basically
+  represent the wave, not fail outright: "wavepackets dominated by
+  different wavelengths (fits comfortably in the coarser grid, marginal
+  on the coarser grid, solidly too small ... but fits on the finest
+  grid)". Built a **static three-level** grid (`params_wave_boundary_
+  3level.txt`, `wave_test_grids_3level.txt`), levels placed away from the
+  periodic seam (first attempt put the finest level flush against it,
+  producing a NaN within 2 steps once its periodically-wrapped ghost
+  cells needed level-1 data from a region only level 0 covers -- an
+  8-unit level-1 buffer on each side fixed it): finest `dx=0.025` |
+  intermediate `dx=0.05` | coarse `dx=0.1`, boundaries at `x=32` and
+  `x=40`. Same packet construction as above, three wavelengths chosen so
+  points/wavelength *at the coarsest level* is 8 ("comfortable"), 4
+  ("marginal", matching the single-boundary test above), or 2 ("severe",
+  the Nyquist limit) -- giving 2x and 4x that at the intermediate/finest
+  levels automatically (fixed ref_ratio=2), so each case crosses a
+  *different pair* of points-per-wavelength transitions: comfortable
+  32->16->8, marginal 16->8->4, severe 8->4->2.
+  **Energy result, and it cross-validates cleanly**: plotting the exact
+  moment of each crossing shows the loss depends on the *local*
+  points/wavelength transition there, not on which case or which
+  boundary -- confirmed by it recurring at consistent values across
+  independent occurrences: a 16->8 crossing costs ~2.6-2.8% (comfortable's
+  2nd boundary: 99.8%->97.2%; marginal's 1st: 99.8%->97.4%); an 8->4
+  crossing costs ~27-28% (marginal's 2nd: 97.4%->70.0%; severe's 1st:
+  100%->72.1%, matching the single-boundary test's 27.6% closely). The
+  one genuine surprise: severe's 2nd crossing (4->2, all the way to
+  Nyquist) cost only a further ~1.6% (72.1%->70.5%) -- far less than a
+  second 8->4-sized hit would suggest, i.e. the loss is not monotonically
+  worsening per crossing once a wave has already been degraded by an
+  earlier one. Not explained -- flagged as observed, not modelled.
+  **Spectra** (`analysis/wave_boundary_test/wave3_spectra.png`, psi2
+  power spectrum, linear-interpolated onto a uniform finest-resolution
+  grid before FFT -- checked this doesn't bias the result by repeating
+  with nearest-neighbour resampling instead: same peak location either
+  way): comfortable's spectrum is unchanged early to late, essentially
+  down to the FFT noise floor at 3x the fundamental (relative power
+  `2e-12`, against `2e-27` at t=0 -- i.e. present but utterly negligible).
+  Marginal and severe both develop a **real, resolution-induced 3rd-
+  harmonic peak** absent at t=0 (`~1e-30` there) and absent in the
+  comfortable case: `1.6%` of peak power for marginal, `3.0%` for severe,
+  confirmed at the same `k` under both resampling methods (not an
+  analysis artefact) and confirmed absent from the initial condition (not
+  something already present in the IC). Mechanism not pinned down
+  (candidates: genuine cubic-nonlinearity harmonic generation, amplified
+  by poor resolution changing the fundamental/harmonic's relative
+  survival; or an artefact of the coarse-fine prolongation operator
+  itself injecting spurious high-k content) -- flagged as a further,
+  distinct symptom of the same under-resolved-boundary problem, not
+  further chased. Profile grid (`analysis/wave_boundary_test/wave3_
+  profiles.png`) shows the qualitative counterpart: severe's crossing
+  visibly leaves the most prominent reflected remnant of the three cases
+  (small but clearly a separate, slowly-separating packet, unlike
+  marginal or comfortable), consistent with reflection becoming
+  proportionally more relevant as resolution worsens, alongside the
+  dominant dissipation channel already established above.
+
+  **Major correction (2026-09-20, same day, with the user): most of the
+  "energy loss" above is not dissipation at all -- it is substantially a
+  measurement artefact of the energy diagnostic's own finite-difference
+  gradient stencil, and it is largely reversible.** Requested: normalise
+  the spectrum as `(1/rho_0) d(rho)/d(log k)` (so its area under the
+  curve reads off the retained energy fraction directly), move the two
+  boundaries 1.5x further apart, and run the marginal/severe cases much
+  longer (`t=200`, ~2 periodic round trips) to see whether reflected
+  energy bounces back and forth. It does more than bounce: **the total
+  energy trace does not settle to a lower plateau at all -- it oscillates
+  with large amplitude** (marginal: ~66%-95% of the initial value,
+  severe: ~64%-95%), repeating over multiple periods with no sign of
+  decay toward a fixed asymptote (`analysis/wave_boundary_test/
+  wave3v2_energy_full.png`). Splitting the energy into its kinetic
+  (`Pi2^2`) and gradient (`|grad(psi2)|^2`) parts separately
+  (`wave3v2_kinetic_vs_gradient.png`) shows why: **gradient energy swings
+  far more violently (33%-95%) than kinetic (75%-100%)**, and both
+  recover substantially whenever the wave packet re-enters a well-
+  resolved region (visible directly in the profile grids,
+  `wave3v2_profiles_marginal.png`/`_severe.png`, as the packet
+  refocusing after a spread-out interval on coarser grids). This matches
+  a computable, resolution-dependent property of the project's own
+  4th-order first-derivative stencil (`FourthOrderDerivatives::diff1`,
+  used for the gradient-energy term): its Fourier transfer function
+  `k_eff(k)` is *not* `k` away from the continuum limit, so `(k_eff/k)^2`
+  -- the fraction of the true gradient energy the stencil actually
+  reports -- is `0.98` at 16 points/wavelength, `0.72` at 4 points/
+  wavelength, and exactly `0` at 2 points/wavelength (the stencil's
+  transfer function has an exact null at the Nyquist wavenumber,
+  independent of phase) -- these numbers bracket the observed retained
+  fractions well. **This does not mean there is no genuine loss** (the
+  3rd-harmonic generation documented above is real, irreversible mode
+  transfer, confirmed absent from the initial condition; the energy
+  trace's peaks also decay slowly run-to-run, e.g. marginal's peaks go
+  ~95% -> recovering to ~89% by `t=200`, not fully back to 100%) -- but
+  it means **the single-boundary result quoted earlier in this entry
+  (27.6% "lost") should not be read as 27.6% of the wave's energy being
+  destroyed**; a large fraction of that number is the diagnostic
+  temporarily failing to see gradient energy that is still physically
+  present, reversible once the content returns to good resolution.
+  **Practical implication, not yet acted on**: any energy-conservation
+  check in this project (including the ones already used for network
+  runs) can show large *apparent* non-conservation purely from field
+  content moving across a resolution change, with no real energy loss
+  behind it -- this needs to be kept in mind before treating an energy
+  discrepancy near a refinement boundary as evidence of a bug or of real
+  dissipation. Spectra with the requested normalisation
+  (`wave3v2_spectra_normalized.png`, four times per case: initial,
+  between the two boundaries, a low-energy point, and a recovered/high-
+  energy point) show this directly -- the area under each curve tracks
+  the (reversible) energy swing, and the harmonic peak's relative
+  prominence is visibly smaller at the recovered point than at the low
+  point for both marginal and severe, consistent with genuine partial
+  recovery, not just an amplitude rescaling of a fixed shape.
+
+  **Further correction (2026-09-20, same day, with the user, pushing
+  back): the "measurement artefact" framing above is right for the
+  *amplitude* of the energy oscillation, but wrong about *why* the
+  severe case's energy comes back -- the user was right to be
+  unconvinced, and correctly guessed the real mechanism (reflection, not
+  mismeasured transmission).** Checked directly by region-splitting the
+  (exact, kinetic+gradient, `yt`-integrated) energy into West (`x<48`,
+  the original/finest side), Middle (`48<x<60`) and East (`x>60`, the
+  coarse "transmitted" side) over the full `t=200` severe run
+  (`analysis/wave_boundary_test/severe_region_split.png`): **East never
+  exceeds 0.22% of the initial total energy, at any time in the entire
+  run.** Essentially none of the wave ever gets past the second boundary
+  -- what looked like a "transmitted packet" in the earlier profile plot
+  (a large-*amplitude* feature in the coarse region) carries negligible
+  real energy; the actual dynamics is the wave crossing boundary 1
+  freely (West <-> Middle, both directions, repeatedly) while being
+  *almost totally reflected* at boundary 2, trapped oscillating between
+  West and Middle for the whole run -- this, not measurement bias in the
+  East region, is what the earlier energy-oscillation plot was showing.
+  **Mechanism, verified numerically**: severe's boundary-2 crossing is
+  exactly 2 points/wavelength -- the discrete Nyquist limit. The
+  project's own Laplacian stencil (`FourthOrderDerivatives::diff2`, used
+  in `AxionStringsRHS`) gives a discrete dispersion relation whose *group
+  velocity* (`d(omega)/dk`, `omega=k_eff` for the massless mode) is a
+  generic, stencil-independent zero at the Brillouin-zone boundary
+  (`k*dx=pi`) by lattice symmetry -- checked directly for this stencil:
+  `d(k_eff)/d(k dx) -> 0` as `k dx -> pi`, vs. a substantial `0.87` (close
+  to the continuum value 1) at `k dx = pi/2` (marginal's own coarsest
+  crossing, 4 points/wavelength). A wave with zero group velocity on the
+  grid it would need to enter simply cannot propagate there -- so it
+  reflects, essentially completely, exactly as observed. Marginal's own
+  coarsest crossing (4 points/wavelength) is *not* at this cutoff, so it
+  should behave differently (real, if reduced, transmission) -- not yet
+  checked with the same region-split, flagged as the natural next step
+  if this is worth confirming. **Revised bottom line**: the reversible
+  "measurement bias" explanation above is real and relevant to *how much*
+  the trapped wave's measured energy swings as it moves between West's
+  good resolution and Middle's poorer one, but the *dominant* effect,
+  at least for a crossing this severe, is a genuine physical cutoff --
+  near-total reflection at a resolution jump landing exactly on the
+  discrete Nyquist limit -- not a diagnostic seeing-and-not-seeing
+  problem. Do not generalise the "it's just measurement bias, real
+  energy is fine" reading from this entry without checking the region
+  split first.
+
+  **Same-day follow-up, user asking specifically "what happens between
+  t=50 and t=100 -- I'd expect energy conserved, so how does it
+  change?"**: the "West" bin above (`x<48`) was itself not uniform, and
+  lumping it together hid the answer. `x<48` contains, left to right: the
+  coarse-left buffer `[0,12)` (level 0 only, *the same `dx=0.1` as the
+  main coarse region*), an intermediate corridor `[12,24)`, and the
+  finest zone `[24,48)`. Tracing the actual `psi2` profile through this
+  window (`analysis/wave_boundary_test/severe_t50_100_detail.png`) shows
+  the reflected wave drifting left from the finest zone, crossing `x=24`
+  (finest/intermediate, an easy 8->4 points/wavelength transition) into
+  the intermediate corridor, then visibly scattering right at **`x=12`
+  -- which is *also* a 4->2 points/wavelength transition, the same
+  Nyquist cutoff as boundary 2** -- before reflecting back right and
+  recrossing into the finest zone by `t=100`. **So there are two Nyquist
+  walls, at `x=12` and `x=60`, not one -- the wave is trapped in a
+  48-wide cavity between them**, with `x=24` and `x=48` (both ordinary,
+  non-Nyquist crossings) transparent in between. The `t=50-100` energy
+  dip-and-recovery is exactly the reversible gradient-stencil measurement
+  bias from above, operating at this *second*, previously unmarked
+  internal boundary as the trapped wave transits the poorly-resolved
+  corridor near `x=12` and back -- not a new or additional real loss, just
+  the same mechanism recurring somewhere the original three-bin
+  West/Middle/East split didn't distinguish. Lesson for any future
+  version of this test: when defining "regions" to track energy in a
+  multi-level static grid, split by *actual dx*, not by the two headline
+  boundaries -- any region spanning more than one resolution internally
+  will hide this kind of substructure.

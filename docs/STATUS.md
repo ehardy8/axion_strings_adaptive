@@ -1001,3 +1001,45 @@ aren't identical (or at least statistically indistinguishable for a
 `fourier_relaxed` run with genuine floating-point reduction-order
 sensitivity), something in this audit missed a case.
 
+**Follow-up, same day: a worked cluster-scale example parameter file
+(2026-09-22, with the user, asked to make sure every option discussed in
+the cluster guide -- `axion_strings.tagging.regrid_interval_steps`
+specifically named -- is genuinely settable, plus a clear example for a
+"moderately big cluster run").**
+
+New `AxionStrings/params_cluster_512base_2level.txt`: `N_base=512`,
+`amr.max_level=2` (`N_effective=2048`) -- a deliberate step up from every
+base grid tried so far in this project (previously largest was
+`N_base=160`, `params_full_test_640.txt`). Uses the
+`regrid_interval_steps`/`buffer_safety_factor` mechanism (not hand-set
+`amr.n_error_buf`/`regrid_int`) with `buffer_safety_factor=1.5` for the
+extra margin a not-yet-tried configuration warrants, leaves
+`pre_evolution.gamma` unset to demonstrate the new auto-derivation, and
+turns on every optional diagnostic (masking scheme B, spectrum,
+projection) so the file doubles as a complete worked example of every
+category of setting the cluster guide documents.
+
+Re-verified every parameter the guide's parameter tables reference
+against its actual `pp.get`/`pp.queryAdd` call site (not just the ones
+touched recently) -- all confirmed genuinely wired, including the native
+AMReX-read ones (`amr.blocking_factor`, `regrid_int`, `n_error_buf`,
+`max_grid_size`, all read directly by `amrex::AmrMesh`/`amrex::Amr`, not
+by this project's own code) and `evolution.dt_multiplier` (read
+unconditionally by `GRAmrLevel::ComputeDt`, not only when the regrid-
+buffer-policy mechanism happens to also read it).
+
+**Verified**: smoke-tested the new file directly (not just written and
+assumed correct) -- `evolution.max_steps=0` first, confirming every
+box-plan number in the file's own header comment (`L_tilde`, `dx_base`,
+`dx_finest`, both level thresholds, the auto-derived `gamma`) matches the
+program's actual startup printout exactly; then 3 real steps at 8 MPI
+ranks (the $512^3$ level-0 grid, matching the earlier fixed-grid speed
+benchmark's cell count almost exactly, so ~45s/step here was expected,
+not a red flag) with no NaN or crash. The `axion_strings.save_projection`
+"unused ParmParse variable" warning that showed up in that 3-step run is
+expected, not a bug: `ic_mode=fourier_relaxed` starts in
+`Phase::Relaxing`, and the diagnostic-output code path that reads
+`save_projection` is gated to `Phase::Evolving`, which 3 steps of
+relaxation is nowhere near reaching -- already independently confirmed by
+reading the call site directly, not just inferred from this run's
+behaviour.

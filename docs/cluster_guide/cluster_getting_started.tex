@@ -1,0 +1,696 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Helvetica Neue}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+
+\definecolor{codebg}{RGB}{244,244,247}
+\definecolor{codeframe}{RGB}{210,210,216}
+\definecolor{accent}{RGB}{31,74,121}
+\definecolor{warnbg}{RGB}{255,245,230}
+\definecolor{warnframe}{RGB}{224,168,90}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framesep=6pt,
+  xleftmargin=2pt,
+  xrightmargin=2pt,
+  columns=fullflexible,
+  keepspaces=true,
+}
+
+\newtcolorbox{note}{colback=codebg,colframe=codeframe,boxrule=0.5pt,arc=2pt,left=8pt,right=8pt,top=6pt,bottom=6pt,breakable}
+\newtcolorbox{warn}{colback=warnbg,colframe=warnframe,boxrule=0.5pt,arc=2pt,left=8pt,right=8pt,top=6pt,bottom=6pt,breakable,title={Watch out},fonttitle=\bfseries\color{warnframe!60!black},coltitle=black}
+
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{accent}}{\thesubsection}{0.6em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{gray} Axion Strings AMR --- Cluster Guide}
+\fancyhead[R]{\small\color{gray} \thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=accent,
+  urlcolor=accent,
+  citecolor=accent,
+  pdftitle={Axion Strings AMR: Running on a Cluster},
+  pdfauthor={Axion Strings AMR project}
+}
+
+\setlist[itemize]{leftmargin=1.4em}
+\setlist[enumerate]{leftmargin=1.6em}
+
+\title{\vspace{-1.5cm}\textbf{\Huge Axion Strings AMR}\\[0.3cm]\Large Getting Started on a Cluster}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+\vspace{-1.2cm}
+
+\begin{note}
+\textbf{Who this is for.} You can already \texttt{ssh} into a cluster and \texttt{scp}/\texttt{rsync} files
+back and forth, but you don't need to be a systems person to follow this. Every command you need is given
+in full --- copy, paste, adjust the few things flagged as ``change this''.
+\end{note}
+
+\tableofcontents
+
+\section{What you're running}
+
+This is a 3D simulation code for axion cosmic strings, built on the AMReX/GRTeclyn adaptive-mesh-refinement
+(AMR) framework. ``Adaptive mesh'' means the simulation automatically uses a fine grid only where the
+physics needs it (near strings) and a coarse grid everywhere else, which is what makes bigger, more
+realistic runs affordable at all.
+
+Practically, this means two things:
+\begin{itemize}
+  \item One compiled program (an \texttt{.ex} file) runs every kind of simulation this project does ---
+        different physics comes from a plain-text \emph{parameter file}, not different code.
+  \item A run writes two very different kinds of output: a handful of small text files with the physics
+        summaries you actually want (string density, energy, spectra, \dots), and --- only if you ask for
+        them --- large binary ``plotfiles'' with the full 3D field on disk. You will almost never want to
+        move the plotfiles off the cluster; see Section~\ref{sec:getting-data-back}.
+\end{itemize}
+
+\section{Step 1: Get the code onto the cluster}
+
+The repository uses two git \emph{submodules} (GRTeclyn and its dependency, AMReX) that must be checked
+out alongside it. If the cluster's login node has internet access, the cleanest approach is to clone
+directly there:
+
+\begin{lstlisting}
+ssh you@cluster.example.edu
+git clone --recurse-submodules https://github.com/<your-username>/axion_strings_adaptive.git
+cd axion_strings_adaptive
+\end{lstlisting}
+
+If the cluster has no internet access from compute/login nodes (common on HPC systems), clone and prepare
+the submodules on your own machine first, then copy the whole tree over with \texttt{rsync} (much faster
+than \texttt{scp} for a big directory tree, and it can resume if interrupted):
+
+\begin{lstlisting}
+# on your own machine
+git clone --recurse-submodules https://github.com/<your-username>/axion_strings_adaptive.git
+rsync -avz --progress axion_strings_adaptive/ you@cluster.example.edu:~/axion_strings_adaptive/
+\end{lstlisting}
+
+\begin{note}
+Do \emph{not} copy a compiled executable from your laptop to the cluster --- it was built for a different
+processor and operating system and will not run. Always build fresh on the cluster (Step 2).
+\end{note}
+
+\section{Step 2: Build it on the cluster}
+
+\subsection{Load a compiler and MPI}
+
+Clusters make software available through \texttt{module} commands rather than having everything installed
+system-wide. The exact module names differ between clusters, so start by looking:
+
+\begin{lstlisting}
+module avail mpi
+module avail fftw
+\end{lstlisting}
+
+On DESY's Maxwell cluster (the system this guide's SLURM template was written against) this looks like:
+
+\begin{lstlisting}
+module load mpi/openmpi-x86_64
+module load fftw
+\end{lstlisting}
+
+\subsection{Tell the build where FFTW is}
+
+The code uses FFTW (for generating initial conditions), and the build needs to know where it's installed.
+After loading the \texttt{fftw} module, find its location:
+
+\begin{lstlisting}
+module show fftw
+\end{lstlisting}
+
+Look for a line setting something like \texttt{FFTW\_ROOT}, \texttt{EBROOTFFTW}, or a \texttt{-I.../include}
+flag --- that directory (the one \emph{containing} \texttt{include/} and \texttt{lib/}) is what you pass as
+\texttt{FFTW\_HOME} below.
+
+\subsection{Build}
+
+This guide builds with multi-threading (OpenMP) switched on --- each MPI rank uses several CPUs at once,
+not just one --- since that's the setup you actually want for a real allocation:
+
+\begin{lstlisting}
+cd axion_strings_adaptive/AxionStrings
+make COMP=gnu FFTW_HOME=/path/from/module/show USE_OMP=TRUE -j8
+\end{lstlisting}
+
+\begin{itemize}
+  \item \texttt{COMP=gnu} tells it to use GCC, the standard choice on Linux clusters (on the project's own
+        Mac, \texttt{COMP=llvm} is used instead --- don't copy that part of any Mac instructions you see).
+  \item \texttt{USE\_OMP=TRUE} is what turns on multi-threading --- see Section~\ref{sec:openmp} for what
+        this means for how you fill in the SLURM script. The bulk of the per-step cost (the physics update
+        itself, and every energy/string-count diagnostic) is already written in a form AMReX itself splits
+        across threads automatically when built this way --- no further code changes needed to benefit from
+        it.
+  \item \texttt{-j8} builds with 8 parallel compile jobs; raise it if you have more cores available on the
+        login node, but check the cluster's policy on running CPU-heavy work on login nodes first --- if
+        it's restricted, submit the build itself as a short batch job (Section~\ref{sec:submitting}, but
+        with the \texttt{make} command in place of \texttt{mpirun}, and no MPI needed for the build). This
+        \texttt{-j8} is about compiling the code faster and is unrelated to \texttt{USE\_OMP} (which is
+        about the compiled program's own later multi-threading).
+\end{itemize}
+
+A successful build takes a few minutes and ends with an executable named something like
+\texttt{AxionStrings3d.gnu.FLOAT.MPI.OMP.ex} sitting in \texttt{AxionStrings/} --- note the \texttt{.OMP}
+tag, confirming multi-threading is compiled in. If it fails, the very last handful of lines of the error is
+almost always a missing module (wrong \texttt{FFTW\_HOME}, or an MPI compiler wrapper not on \texttt{PATH})
+--- re-check Steps 2.1--2.2 before anything else.
+
+\subsection{Ranks and threads: how to split up your CPUs}
+\label{sec:openmp}
+
+You now have two independent dials for spreading a run across CPUs: \texttt{--ntasks} (MPI ranks, each a
+separate process with its own chunk of the domain) and \texttt{--cpus-per-task} (OpenMP threads, each rank
+splitting its own work further across several CPUs at once). Their product is the total number of CPUs the
+job reserves. A reasonable starting point is a handful of threads per rank (\texttt{--cpus-per-task=4} is
+used in the template below) rather than all-ranks-one-thread-each or one-rank-all-threads --- adjust to
+taste once you have a feel for how your specific runs scale.
+
+\begin{warn}
+A \texttt{USE\_OMP=TRUE} build does nothing by itself until you also tell it how many threads to use, via
+the standard \texttt{OMP\_NUM\_THREADS} environment variable --- \textbf{always set it to match
+\texttt{\$SLURM\_CPUS\_PER\_TASK}} in your submission script (the template in Section~\ref{sec:submitting}
+already does this --- keep that line if you copy it). Leaving it unset is not merely a missed optimisation:
+OpenMP then defaults to using \emph{every} core it can see on the node, which badly oversubscribes the
+machine as soon as more than one MPI rank shares that node (the normal case). \texttt{--cpus-per-task} and
+\texttt{OMP\_NUM\_THREADS} always travel together --- never set one without the other.
+\end{warn}
+
+\section{Step 3: Organise your files on the cluster}
+\label{sec:organise}
+
+Most clusters give you (at least) two separate storage areas with very different rules:
+
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{3.1cm} X@{}}
+\toprule
+\textbf{Area} & \textbf{Use it for} \\
+\midrule
+\texttt{\$HOME} & The code itself (this repo). Usually small quota, backed up, \emph{not} meant for run
+output. \\[0.15cm]
+\texttt{\$SCRATCH} / \texttt{\$WORK} (name varies) & Everything a simulation writes. Usually large quota,
+\emph{not} backed up, and some clusters auto-delete old files here --- treat it as temporary. \\
+\bottomrule
+\end{tabularx}
+
+\vspace{0.3cm}
+Run \texttt{ls -la \$HOME} and check your cluster's documentation (or ask IT) for the scratch area's
+actual environment variable if \texttt{\$SCRATCH} isn't it.
+
+\textbf{Recommended layout} --- one directory per run, never reused, so nothing from an old run silently
+mixes with a new one:
+
+\begin{lstlisting}
+$SCRATCH/axion_runs/
+    2026-09-21_N512_seed1/
+        params.txt          # the exact parameter file used
+        slurm.sh             # the exact submission script used
+        run.log               # this run's console output
+        network_scalars.dat   # small diagnostics (keep)
+        axion_spectrum.dat     # small diagnostics (keep)
+        axion_projection.dat    # small diagnostics (keep, if enabled)
+        plt00000/  plt00100/  ...  # plotfiles, if amr.plot_int is set (usually large -- see Sec. 9)
+        chk00000/                    # checkpoints, if amr.check_int is set
+\end{lstlisting}
+
+Copying \texttt{params.txt} and \texttt{slurm.sh} into the run's own directory (rather than only keeping
+one shared copy) means that six months from now you can look at any run directory and know exactly what
+produced it, with no guessing from memory or from a shared file that's since been edited.
+
+\section{Step 4: Set up a run --- the parameter file}
+
+Every run is controlled by one plain-text file (e.g.\ \texttt{params.txt}), lines of the form
+\texttt{key = value}. Existing examples live in \texttt{AxionStrings/params\_*.txt} --- copying the closest
+existing one and editing it is usually easier than writing one from scratch.
+
+\subsection{The parameters you'll actually touch}
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.4em]
+\item[\texttt{axion\_strings.c0}]
+  Which physical system: \texttt{0} = physical strings (the real thing), \texttt{1} = ``fat'' string
+  (cheaper, approximate), \texttt{2} = ``Moore'' mode. Start with \texttt{0} unless told otherwise.
+\item[\texttt{axion\_strings.N}]
+  Overall box size / resolution target. This is the single biggest lever on both physical realism and
+  cost --- see Section~\ref{sec:scaling-up}.
+\item[\texttt{axion\_strings.N1}, \texttt{N2}]
+  Leave these at \texttt{1.0} unless someone has specifically told you otherwise --- they fix two resolution
+  targets (``horizon fits in the box'' and ``string core is resolved'') that the project has already
+  settled on.
+\item[\texttt{axion\_strings.log\_mr\_over\_h\_i}]
+  How far into the simulation's natural time range the run \emph{starts}. Bigger box (\texttt{N}) sizes
+  can afford to start later (a bigger number) without the string network being unrealistically fresh.
+  \texttt{2.0} is a safe, already-used starting point.
+\item[\texttt{amr.max\_level}]
+  How many levels of automatic refinement to allow (\texttt{0} = no refinement, a plain uniform grid).
+  Higher is more realistic \emph{and} usually much cheaper for the same finest resolution (adaptive
+  refinement only pays for fine cells where they're needed) --- see the timing note in
+  Section~\ref{sec:scaling-up}. \texttt{2} is a good, validated starting point.
+\item[\texttt{axion\_strings.ic\_mode}]
+  How the simulation starts. \texttt{fourier\_relaxed} (a randomised starting field, settled into a
+  realistic tangle before the ``real'' run begins) is what production runs use --- it needs the four
+  companion parameters just below, all of which are \emph{required} (the run refuses to start without
+  them, there is no built-in fallback).
+\item[\texttt{axion\_strings.pre\_evolution.seed}]
+  The random seed for that starting field. \textbf{This is your ensemble knob} --- run the same parameter
+  file with different seeds to get independent realisations of the same physics (see the SLURM array
+  example in Section~\ref{sec:submitting}).
+\item[\texttt{amr.plot\_int}]
+  How often (in steps) to write a full 3D plotfile. These are large. Leave at \texttt{-1} (off) unless you
+  specifically want to visualise the field; the physics diagnostics you actually analyse
+  (\texttt{network\_scalars.dat} etc.) are controlled separately below and are cheap.
+\item[\texttt{axion\_strings.output\_first\_log\_mr\_over\_h}]
+  Where in the run to start writing rows to the small diagnostics files. There's no built-in default ---
+  in practice this is almost always set equal to \texttt{log\_mr\_over\_h\_i} just above (start recording
+  from the very beginning of the main run).
+\item[\texttt{axion\_strings.output\_delta\_log\_mr\_over\_h}]
+  How often, after that, to write another row. \texttt{0.1--0.2} is a typical spacing.
+\end{description}
+
+\subsection{The \texttt{fourier\_relaxed} companion parameters}
+\label{sec:fourier-relaxed-params}
+
+These four are required whenever \texttt{axion\_strings.ic\_mode = fourier\_relaxed} (the recommended,
+default choice above). All four have settled, essentially fixed typical values, or --- for \texttt{gamma}
+--- are simply left unset so the program derives it for you.
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.4em]
+\item[\texttt{axion\_strings.pre\_evolution.gamma}]
+  \textbf{Leave this unset.} The program derives it automatically as \texttt{1/dx\_base} (the coarsest-level
+  grid spacing) and prints what it derived as part of its startup box plan --- this is the resolution the
+  relaxation phase needs to run at so the string cores it produces are resolved consistently with what the
+  main run's own grid looks like the moment it starts (relies on \texttt{log\_mr\_over\_h\_i} being below
+  the level-1 threshold printed just above it, i.e.\ the main run genuinely starting on the coarsest grid
+  alone --- the program checks this itself and refuses to start if it isn't true, rather than silently
+  relaxing at the wrong resolution). You can still set it by hand if you have a specific reason to (e.g.\
+  experimenting with a different relaxation resolution) --- the program then checks your value against what
+  it would have derived and prints a warning (not an error --- the run still proceeds with your value) if
+  they disagree, so an accidental stale value from a previous box size doesn't go unnoticed.
+\item[\texttt{axion\_strings.pre\_evolution.xi\_target}]
+  Stop relaxing once the (measured) string density first drops to this value. \textbf{Typical value:
+  \texttt{1.0}} (used throughout the project's own validated examples; some production runs instead target
+  a lower value like \texttt{0.7} for a more settled starting tangle at the cost of a longer relaxation
+  phase).
+\item[\texttt{axion\_strings.pre\_evolution.k\_max\_over\_mr}]
+  The highest wavenumber (in units of $m_r$) populated in the random starting field. \textbf{Typical value:
+  \texttt{64}}, used in every validated example at \texttt{amr.max\_level=2}. If you're testing a
+  \emph{much} coarser base grid or a deeper hierarchy than those examples, this is worth being cautious
+  with --- \texttt{docs/STATUS.md} documents a specific pathology where too high a value here (relative to
+  how coarse the base grid is) over-tags the whole domain for refinement; if a test run's very first regrid
+  tags close to 100\% of the domain unexpectedly, this is the first parameter to suspect.
+\item[\texttt{axion\_strings.pre\_evolution.mean\_square\_variance}]
+  How much random power to start with. \textbf{Always \texttt{0.5}} in this project's convention (chosen
+  so the field's total mean-square amplitude works out to the natural unit value) --- not something to
+  change casually.
+\end{description}
+
+\subsection{A note on \texttt{amr.max\_grid\_size}}
+
+This one doesn't change the physics at all, only how the domain is chopped up for parallel processing ---
+but it needs to roughly match how many MPI ranks you plan to run with (Section~\ref{sec:submitting}). A
+smaller \texttt{amr.max\_grid\_size} makes more, smaller chunks, letting you usefully spread the coarse
+level across more ranks. As a rule of thumb: (grid size at that level) $\div$ \texttt{max\_grid\_size},
+cubed, should be at least as big as your \emph{rank} count --- specifically ranks, not total CPUs: each
+rank's own threads (Section~\ref{sec:openmp}) already split the cells \emph{within} whatever chunks that
+rank owns, so this box count doesn't need to grow with \texttt{--cpus-per-task} the way it would need to
+grow with \texttt{--ntasks}.
+
+\subsection{Scaling up to a bigger test}
+\label{sec:scaling-up}
+
+\begin{enumerate}
+  \item Take the closest existing \texttt{params\_*.txt} as a starting template (e.g.\
+        \texttt{params\_full\_test\_640.txt}).
+  \item Raise \texttt{axion\_strings.N}. Leave \texttt{N1}/\texttt{N2} alone.
+  \item If your template has an \texttt{axion\_strings.pre\_evolution.gamma} line (every existing example
+        does), delete it --- it was computed for the \emph{old} box size and won't match the new one, and
+        while the program will still run and only warn about the mismatch (Section~\ref{sec:fourier-relaxed-params}),
+        the relaxation phase would silently run at the wrong resolution if you missed that warning. Leaving
+        \texttt{gamma} out entirely sidesteps the issue and lets the program derive the right value for you.
+  \item \textbf{Always do a very short test run first} (see the box below) before committing a multi-hour
+        job to the queue.
+\end{enumerate}
+
+\begin{warn}
+The program prints its own ``box plan'' (grid spacing, box size, refinement schedule) in the first few
+lines of output, every time it starts, \emph{before} it starts stepping. Always read those first few lines
+after raising \texttt{N} and check nothing looks surprising (in particular, an unexpectedly coarse grid
+spacing has previously caused a run to tag far more of the domain for refinement than intended, quietly
+making a run much more expensive than planned). A 2--3 minute local test with a handful of steps
+(\texttt{evolution.max\_steps=50} added on the command line) is enough to see this printout and catch a
+misconfiguration before it costs a multi-hour cluster allocation.
+\end{warn}
+
+\subsection{A worked example: a moderately big cluster run}
+\label{sec:worked-example}
+
+\texttt{AxionStrings/params\_cluster\_512base\_2level.txt} is a complete, ready-to-run example at a scale
+genuinely worth a cluster (not just a laptop test): a $512^3$ base grid with 2 refinement levels
+($N_\mathrm{effective}=2048$), physical strings, every optional diagnostic in Section~\ref{sec:advanced}'s
+``Extra diagnostics'' turned on so you can see all of them wired up in one place, and the regrid-buffer
+mechanism from Section~\ref{sec:regrid-buffer} used instead of hand-set values. Its own header comment shows
+the full box-plan arithmetic worked by hand, the same way this section asks you to check it --- and it has
+actually been smoke-tested (a few steps, confirmed no crash and an exact match between the hand-worked
+numbers and what the program itself printed) before being included here, not just written and assumed
+correct.
+
+Use it directly, or --- more usefully --- as the template Step 1 above refers to: copy it, change
+\texttt{axion\_strings.N} for your own target size, delete the (still-present, now stale) comment block
+doing the old box-plan arithmetic by hand, and let the short test run's own printout give you the new
+numbers instead.
+
+\section{Less commonly changed options}
+\label{sec:advanced}
+
+Everything in this section has a sensible default and most runs never need to touch it --- skip it on a
+first read and come back if you have a specific reason to (a run behaving oddly, or someone asking you to
+try a specific value).
+
+\subsection{How often refinement is re-checked, and its safety buffer}
+\label{sec:regrid-buffer}
+
+The adaptive mesh doesn't re-decide where to refine on every single step (that would be wasteful) --- it
+re-checks periodically, then grows a safety buffer of extra-refined cells around every flagged region so
+that nothing genuinely fast-moving can slip out of the fine grid in between checks.
+
+\textbf{There are exactly two parameters to set here, together, and nothing else in this subsection needs
+touching once you have:}
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.4em]
+\item[\texttt{axion\_strings.tagging.regrid\_interval\_steps}]
+  How often, in steps, the simulation re-decides where to refine. \textbf{Typical value: \texttt{2}}
+  (matching every one of the project's own validated example runs). Smaller tracks the strings more
+  tightly (fewer stale/wasted fine cells) but costs more time spent re-deciding; larger is cheaper
+  bookkeeping but requires a wider safety buffer (derived automatically below), meaning more volume held at
+  finer resolution than strictly necessary.
+\item[\texttt{axion\_strings.tagging.buffer\_safety\_factor}]
+  A multiplier $\geq 1.0$ on top of the bare-minimum buffer width the code derives from
+  \texttt{regrid\_interval\_steps} above. \textbf{Default: \texttt{1.0}} (the bare minimum) --- raise it
+  (e.g.\ to \texttt{1.5} or \texttt{2.0}) only for extra headroom when trying a new, not-yet-trusted
+  combination of parameters, at the cost of refining a bit more volume than the bare minimum.
+\end{description}
+
+\begin{warn}
+Setting these two is an \emph{alternative} to setting \texttt{amr.regrid\_int}/\texttt{amr.n\_error\_buf}
+yourself, not an addition to it --- once \texttt{regrid\_interval\_steps} is set, the run derives both of
+those for you automatically and prints what it derived (and why) in its startup output, right alongside the
+box plan (worth reading alongside the box-plan check in Section~\ref{sec:scaling-up}'s warning box).
+\textbf{Don't also set \texttt{amr.regrid\_int}/\texttt{amr.n\_error\_buf} by hand in the same parameter
+file} --- if you do, the run cross-checks them against what it derived and stops with an error rather than
+silently picking one. The rest of this box explains what those two lower-level parameters mean, only for
+the (uncommon) case where you want to bypass the mechanism above entirely and set them directly instead:
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.3em]
+\item[\texttt{amr.regrid\_int}] Steps between refinement re-checks, set directly. \texttt{-1} on a single
+  level disables regridding entirely (used by the wave-packet boundary tests in
+  \texttt{AxionStrings/analysis/wave\_boundary\_test/} to hold a grid fixed).
+\item[\texttt{amr.n\_error\_buf}] The safety buffer width itself, in cells, set directly.
+\end{description}
+\end{warn}
+
+\subsection{How sensitive the refinement trigger is (off by default)}
+
+What actually finds strings for refinement, for context on the two optional parameters below: the tagger's
+\emph{primary} criterion is an exact, parameter-free topological test --- does the field's phase wind by a
+full $\pm 2\pi$ loop around a cell's corner plaquette? That's an integer (a string pierces this cell or it
+doesn't), not a threshold on a continuous quantity, so it has no ``units'' question and nothing for you to
+set --- it's always on. \emph{Which levels are even allowed to exist yet} is controlled separately, by the
+schedule (\texttt{log\_mr\_over\_h\_i} and the box-plan-derived level-addition thresholds); the two
+parameters below don't touch that either. Both default to effectively infinite (i.e.\ off) and were found,
+in earlier testing, to flag essentially the entire domain if turned on carelessly --- leave them alone
+unless you have a specific reason to experiment with gradient-based tagging, and if you do, read
+\texttt{StringTagger.hpp}'s own header comment first for the full reasoning.
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.4em]
+\item[\texttt{axion\_strings.tagging.gradient\_threshold}]
+  A \emph{second}, independent, optional trigger --- despite the name, actually a \emph{Laplacian}
+  (curvature) test, applied separately to each of the field's two real components ($\psi_1$, $\psi_2$; not
+  a decomposed ``axion'' or ``phase'' quantity specifically --- that split is what the next parameter does).
+  A cell is tagged if $dx^2\,|\nabla^2\psi_i|$ exceeds this threshold, for either component.
+  \textbf{Units: dimensionless} --- $dx^2$ (comoving length$^2$) exactly cancels the Laplacian's
+  $1/\mathrm{length}^2$, leaving a pure number of order ``how much $\psi$ curves across one cell, relative to
+  its own natural $O(1)$ scale'' ($\psi$ is normalised by the vacuum value $v=1$ in this code's units).
+  Buschmann et al.\ 2108.05368's own value is \texttt{0.04}, but this project's own testing found that value
+  tags essentially the whole domain for its field statistics --- not a starting point to trust as-is.
+\item[\texttt{axion\_strings.tagging.radial\_gradient\_threshold}]
+  A \emph{third}, independent, optional trigger, this one genuinely radial: $r=|\psi|$, the field's
+  amplitude alone (properly decomposed away from the phase direction, not just combining
+  $\nabla\psi_1$/$\nabla\psi_2$ naively). A cell is tagged if $dx\,|\nabla r|$ exceeds this threshold.
+  \textbf{Units: also dimensionless} (same cancellation, one power of $dx$ against $\nabla r$'s
+  $1/\mathrm{length}$) --- but this is a \emph{first} derivative of a different, derived quantity, not the
+  same operation as \texttt{gradient\_threshold}'s Laplacian of the raw components. Both end up
+  dimensionless on the same rough scale (``per-cell change in units of the field's own $O(1)$ scale''), but
+  a given numeric value doesn't mean the same thing for both --- don't assume tuning one tells you anything
+  about the other.
+\end{description}
+
+\subsection{Domain decomposition, the other half}
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.4em]
+\item[\texttt{amr.blocking\_factor}]
+  Every box's size (in each dimension) must be a multiple of this. Works alongside
+  \texttt{amr.max\_grid\_size} (Section~\ref{sec:scaling-up}) to control how the domain is chopped up for
+  parallel ranks --- the project's own example files use \texttt{16} or \texttt{32}; there's rarely a
+  reason to deviate unless you're chasing a specific load-balancing problem.
+\end{description}
+
+\subsection{Timestep safety margin}
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.4em]
+\item[\texttt{evolution.dt\_multiplier}]
+  The CFL safety factor: how large a timestep to take as a fraction of the finest active grid spacing.
+  \texttt{0.2} is the project's standard, conservative choice. Raising it makes runs faster but risks
+  numerical instability --- not something to change without a specific reason and a stability check.
+\end{description}
+
+\subsection{Cosmological expansion rate}
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.4em]
+\item[\texttt{axion\_strings.a\_inv}]
+  Which cosmological era the box expands through (\texttt{2.0} = radiation domination, the project's
+  standard choice throughout). Only change this if you specifically intend to simulate a different era ---
+  it changes the box-planning formulas, not just a cosmetic label.
+\end{description}
+
+\subsection{Extra diagnostics}
+
+These add real cost (the spectrum needs an FFT of the whole level-0 grid; projections write an extra file
+per snapshot), which is why they default off.
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.4em]
+\item[\texttt{axion\_strings.masking.scheme}, \texttt{axion\_strings.masking.threshold}]
+  \texttt{scheme} defaults to \texttt{A} (unscreened) if left unset. Set it to \texttt{B} (with a
+  \texttt{threshold} in $(0,1)$ --- \textbf{required} in that case, no default) to additionally get
+  \emph{screened} energy/tension numbers --- ``screened'' excludes a region around each string core from
+  the energy sum, which some analyses want and others don't. Values \texttt{0.8}, \texttt{0.9} and
+  \texttt{0.95} have all been used by this project at different times without settling on one, so treat any
+  particular value as a choice to state explicitly in your own notes, not an established default.
+  \texttt{axion\_strings.compute\_spectrum} (below) requires scheme B.
+\item[\texttt{axion\_strings.compute\_spectrum}]
+  Set to \texttt{1} to write \texttt{axion\_spectrum.dat} (needed for the spectrum panel of
+  Section~\ref{sec:analyse-locally}'s standard plots). Requires \texttt{axion\_strings.masking.scheme = B}
+  (just above).
+\item[\texttt{axion\_strings.save\_projection}]
+  Set to \texttt{1} to additionally save a 2D projection of the field at each diagnostic snapshot, useful
+  for visualising the string network's evolution over time rather than only its summary statistics.
+\end{description}
+
+\subsection{Checkpointing and restart}
+
+\begin{description}[style=nextline,leftmargin=1.2em,itemsep=0.4em]
+\item[\texttt{amr.check\_int}]
+  How often (in steps) to write a full checkpoint you can restart from. \texttt{-1} (the default in every
+  example file) turns it off. Turn it on for any run that might not finish inside one job's walltime --- see
+  the warning box in Section~\ref{sec:watch-it-run}. Restarting from a checkpoint changes how you invoke the
+  executable; ask if you need this and it isn't already covered by an example you've found.
+\end{description}
+
+\section{Step 5: Write and submit the SLURM script}
+\label{sec:submitting}
+
+Below is a template adapted from an existing working example for DESY's Maxwell cluster. If you're on a
+different cluster, the \texttt{--partition}, module names, and \texttt{OMPI\_MCA\_btl} line are the parts
+most likely to need changing --- ask your cluster's documentation or support for the local equivalents.
+
+\begin{lstlisting}
+#!/bin/bash -l
+#SBATCH --job-name=axion_test
+#SBATCH --output=%x_%A_%a.log
+#SBATCH --array=1-4                 # one job per seed: 4 independent realisations
+#SBATCH -N 1                        # nodes
+#SBATCH --ntasks=8                  # MPI ranks (see amr.max_grid_size note, Sec. 5.3)
+#SBATCH --cpus-per-task=4           # OpenMP threads per rank, Sec. 3.4 -- 8x4 = 32 CPUs total
+#SBATCH --time=04:00:00             # walltime: raise for bigger/longer runs
+#SBATCH --partition=maxcpu
+
+module load mpi/openmpi-x86_64
+export OMPI_MCA_btl=^vader,tcp,openib
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK   # must match --cpus-per-task, Sec. 3.4
+
+CODE_DIR=$HOME/axion_strings_adaptive/AxionStrings
+RUN_DIR=$SCRATCH/axion_runs/$(date +%F)_test_seed${SLURM_ARRAY_TASK_ID}
+mkdir -p "$RUN_DIR"
+cp "$CODE_DIR/AxionStrings3d.gnu.FLOAT.MPI.OMP.ex" "$CODE_DIR/params.txt" "$RUN_DIR/"
+cd "$RUN_DIR"
+cp "$0" slurm.sh   # keep a copy of the exact script that produced this run
+
+mpirun -np 8 ./AxionStrings3d.gnu.FLOAT.MPI.OMP.ex params.txt \
+    axion_strings.pre_evolution.seed=${SLURM_ARRAY_TASK_ID} \
+    --bind-to none \
+    > run.log 2>&1
+\end{lstlisting}
+
+A few things worth calling out explicitly:
+\begin{itemize}
+  \item \textbf{\texttt{\#SBATCH --array=1-4}} is what runs 4 independent realisations (different random
+        seeds) as one job submission --- each array element gets its own
+        \texttt{\$SLURM\_ARRAY\_TASK\_ID}, which the script both uses as the seed \emph{and} as part of the
+        run directory name, so the four never collide.
+  \item Parameters after the parameter-file name on the \texttt{mpirun} line
+        (\texttt{axion\_strings.pre\_evolution.seed=\dots}) \emph{override} whatever's in \texttt{params.txt}
+        --- handy for exactly this kind of per-job tweak without needing four separate parameter files.
+  \item \textbf{\texttt{--bind-to none}} matters more here than it would without threads: it stops Open MPI
+        pinning each rank to a single CPU, which would otherwise trap that rank's 4 threads fighting over
+        one core instead of spreading across the 4 \texttt{--cpus-per-task} reserved for it.
+  \item \texttt{--ntasks} is the number of MPI ranks --- it should match \texttt{-np} on the
+        \texttt{mpirun} line. \texttt{--cpus-per-task} is threads \emph{per rank}, and only does anything
+        useful together with a \texttt{USE\_OMP=TRUE} build and a matching \texttt{OMP\_NUM\_THREADS}
+        (Section~\ref{sec:openmp}, both already in this template) --- if you ever build \emph{without}
+        \texttt{USE\_OMP=TRUE}, set \texttt{--cpus-per-task} back to \texttt{1}, or the extra CPUs just sit
+        idle.
+  \item Everything writes into a fresh, timestamped run directory under \texttt{\$SCRATCH}, matching
+        Section~\ref{sec:organise}.
+\end{itemize}
+
+Submit it, and check it's queued:
+
+\begin{lstlisting}
+sbatch slurm.sh
+squeue -u $USER
+\end{lstlisting}
+
+\section{Step 6: Watch it run}
+\label{sec:watch-it-run}
+
+Once a job starts, its log file (\texttt{run.log}, from the redirection in the script above) fills in
+real time:
+
+\begin{lstlisting}
+tail -f $SCRATCH/axion_runs/<run directory>/run.log
+\end{lstlisting}
+
+A healthy run shows repeating blocks like:
+
+\begin{lstlisting}
+[Level 0 step 214] ADVANCE at time 3.02 with dt = 0.0142
+[Level 0 step 214] average evolution speed = 812.4 code units/h
+[Level 0 step 214] Advanced 2097152 cells
+\end{lstlisting}
+
+\texttt{average evolution speed} is the code's own built-in throughput readout --- if it's dropping sharply
+and staying low, the simulation has likely started refining a large fraction of the domain (check the
+\texttt{REGRID} lines just above for how much). \texttt{network\_scalars.dat} (in the same run directory)
+fills in alongside it with the physics summaries and can be watched the same way (\texttt{tail -f}) for a
+terser, physics-only view.
+
+\begin{warn}
+If a job hits its \texttt{--time} limit before finishing, SLURM kills it --- it does not pause and resume
+automatically. If you expect a run might need longer than one job's walltime, turn on checkpointing
+(\texttt{amr.check\_int}, an interval in steps) so you can resubmit and continue from the last checkpoint
+rather than losing the run. This is not covered further here --- ask if you need it, since it changes the
+submission script slightly (the executable needs to be told which checkpoint to restart from).
+\end{warn}
+
+\section{Step 7: Bring the results home}
+\label{sec:getting-data-back}
+
+You almost always want only the small diagnostic files, not the plotfiles (each plotfile is the entire 3D
+field on disk and can be many gigabytes; the diagnostics already capture everything the standard analysis
+plots need). From your own machine:
+
+\begin{lstlisting}
+rsync -avz \
+    you@cluster.example.edu:$SCRATCH/axion_runs/<run directory>/network_scalars.dat \
+    you@cluster.example.edu:$SCRATCH/axion_runs/<run directory>/axion_spectrum.dat \
+    you@cluster.example.edu:$SCRATCH/axion_runs/<run directory>/axion_projection.dat \
+    ~/axion_runs/<run directory>/
+\end{lstlisting}
+
+(Drop any of the three filenames that weren't produced by your particular run --- e.g.\
+\texttt{axion\_spectrum.dat} only appears if \texttt{axion\_strings.compute\_spectrum=1} was set.) It's
+worth also grabbing \texttt{run.log}, \texttt{params.txt} and \texttt{slurm.sh} from the same directory ---
+tiny, and they're the record of exactly what produced the data.
+
+\section{Step 8: Analyse it locally}
+\label{sec:analyse-locally}
+
+The repository's \texttt{AxionStrings/analysis/} scripts take those diagnostic files directly and produce
+the project's standard plots. On your own machine, with the repository's Python environment active
+(see the analysis folder's own \texttt{README.md} for setup if you haven't used it before):
+
+\begin{lstlisting}
+cd axion_strings_adaptive/AxionStrings/analysis
+python3 plot_run_summary.py \
+    ~/axion_runs/<run directory>/network_scalars.dat \
+    ~/axion_runs/<run directory>/axion_spectrum.dat \
+    ~/axion_runs/<run directory>/plots_out \
+    <a_inv> <c0> <N> [optional title tag]
+\end{lstlisting}
+
+This produces the standard set: string density $\xi$, energies (raw and normalised), string tension, and
+the axion spectrum, both raw and normalised. Fill in \texttt{<a\_inv>}, \texttt{<c0>}, \texttt{<N>} with the
+exact values from the \texttt{params.txt} you ran with (they affect the unit conversions, so they need to
+match, not just be ``close'').
+
+If you don't have an \texttt{axion\_spectrum.dat} (i.e.\ you didn't turn spectrum output on), pass
+\texttt{None} in its place --- the script skips the spectrum panel and still produces the rest.
+
+\section{Quick reference}
+
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{3.6cm} X@{}}
+\toprule
+\textbf{Task} & \textbf{Command} \\
+\midrule
+Get code onto cluster & \texttt{git clone --recurse-submodules \dots} or \texttt{rsync -avz \dots} \\
+Build & \texttt{make COMP=gnu FFTW\_HOME=\dots USE\_OMP=TRUE -j8} \\
+Submit a run & \texttt{sbatch slurm.sh} \\
+Check queue & \texttt{squeue -u \$USER} \\
+Watch a running job & \texttt{tail -f run.log} \\
+Cancel a job & \texttt{scancel <jobid>} \\
+Bring results home & \texttt{rsync -avz user@cluster:\dots/*.dat ~/axion\_runs/\dots/} \\
+Make the standard plots & \texttt{python3 plot\_run\_summary.py \dots} \\
+\bottomrule
+\end{tabularx}
+
+\vspace{0.5cm}
+\begin{note}
+If something in this guide doesn't match what you see (a module name, a file that isn't there, an error
+message), that's much more likely to be a cluster-specific detail this guide couldn't anticipate than a
+mistake on your end --- check the cluster's own documentation for the specific piece (module names and
+partition names are the most commonly different), and the rest of the workflow should carry over unchanged.
+\end{note}
+
+\end{document}

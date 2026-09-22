@@ -1,0 +1,183 @@
+# Worked example for a moderately big cluster run (2026-09-22, with the
+# user, for the cluster getting-started guide): physical strings (c0=0),
+# N_base=512 (level 0), amr.max_level=2 -> N_effective=2048. This is
+# deliberately a step up from every N_base tried so far in this project
+# (the largest previously validated base grid was N_base=160,
+# params_full_test_640.txt) -- not run yet at all, so treat the numbers
+# below as "computed by hand, cross-check against what the program itself
+# prints at startup" (docs/cluster_guide's own advice), not as pre-proven.
+#
+# Box plan by hand (N=2048 effective, N1=N2=1, a_inv=2, c=0, max_level=2):
+#   L_tilde = tau_f = sqrt(2048) = 45.254834
+#   dx_base (level 0)   = L_tilde/512 = 0.0883883
+#   dx_finest (level 2) = dx_base/4   = 0.0220971
+#   log(m_r/H) at tau_f = ln(2048) = 7.624619
+#   level-addition schedule: level 1 at log(m_r/H) = 4.852030,
+#                            level 2 at log(m_r/H) = 6.238325
+#   axion_strings.log_mr_over_h_i = 2.0 (below) is comfortably under the
+#   level-1 threshold, same safety margin every other example in this
+#   project uses -- the program itself now refuses to start otherwise
+#   (AxionStringsParams.hpp's apply_pre_evolution_gamma_default check).
+#
+# dx_base = 0.088 is well clear of the dx_base >~ 0.2 danger zone
+# docs/STATUS.md flags (the params_full_test_1024.txt pathology) -- if
+# anything this base grid is *more* resolved than any example that has
+# actually run cleanly so far, not less.
+#
+# axion_strings.pre_evolution.gamma is deliberately NOT set here --
+# AxionStringsParams.hpp derives it automatically as 1/dx_base (2026-09-22
+# change) and prints what it derived; no need to compute or maintain it by
+# hand any more (this file exists partly to demonstrate that).
+
+amr.verbose = 1
+amr.check_int = -1
+# This run is expected to take several thousand main-evolution steps
+# (very roughly: (tau_f - tau_i)/dt_finest, dt_finest ~ 0.2*0.0221 ~
+# 0.0044, over a tau range of ~38 -- order 5000-9000 steps, fewer once
+# early, coarser-dt steps are accounted for). If your walltime is anywhere
+# near tight for that, turn checkpointing on (e.g. amr.check_int = 500 as
+# a starting point) -- see the cluster guide's "Checkpointing and
+# restart" section. Left off here to match every other example file, not
+# because this run is short enough not to need it.
+amr.plot_int  = -1
+
+amr.max_level = 2
+amr.max_grid_size   = 64
+amr.blocking_factor = 32
+# amr.n_error_buf / amr.regrid_int intentionally NOT set directly here --
+# using the tagging.regrid_interval_steps/buffer_safety_factor mechanism
+# below instead (cluster guide Sec. 6.1), which derives both. Setting
+# both would be redundant and, per that mechanism's own cross-check, an
+# inconsistent amr.regrid_int would be an error at startup.
+axion_strings.tagging.regrid_interval_steps = 2
+# 1.5, not the bare-minimum 1.0 default: this exact (N_base, max_level)
+# combination hasn't been run before, so a bit of extra safety margin on
+# the refinement buffer is worth the modest extra volume it costs, per
+# the cluster guide's own advice for "a new, not-yet-trusted combination
+# of parameters".
+axion_strings.tagging.buffer_safety_factor = 1.5
+
+geometry.is_periodic = 1 1 1
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = -1
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 0.0 # physical
+
+axion_strings.log_mr_over_h_i = 2.0
+
+axion_strings.N  = 2048
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+axion_strings.ic_mode = fourier_relaxed
+# axion_strings.pre_evolution.gamma intentionally omitted -- derived
+# automatically (see header comment above).
+axion_strings.pre_evolution.xi_target = 1.0
+axion_strings.pre_evolution.k_max_over_mr        = 64
+axion_strings.pre_evolution.mean_square_variance = 0.5
+# Your ensemble knob -- override per job, e.g. on the mpirun/srun command
+# line with axion_strings.pre_evolution.seed=${SLURM_ARRAY_TASK_ID}
+# (the cluster guide's SLURM template does exactly this).
+axion_strings.pre_evolution.seed = 42
+
+# Screened energy/tension numbers alongside the default unscreened ones,
+# and the axion spectrum (needs scheme B) -- both optional extras with
+# real extra cost (an FFT of the whole level-0 grid per spectrum
+# snapshot); comment out compute_spectrum (and masking.scheme, if you
+# don't want screened energies either) if you only want the lightweight
+# diagnostics. threshold=0.8 is not a settled, canonical choice -- see
+# the cluster guide's own note on this.
+axion_strings.masking.scheme     = B
+axion_strings.masking.threshold  = 0.8
+axion_strings.compute_spectrum   = 1
+# 2D field projections at each diagnostic snapshot, for visualising the
+# network's evolution over time -- another optional extra; comment out
+# if you don't need the pictures.
+axion_strings.save_projection    = 1
+
+axion_strings.output_first_log_mr_over_h = 2.0
+axion_strings.output_delta_log_mr_over_h = 0.2
+
+################################################################################
+# Every other setting applicable to a physical-string (c0=0), ic_mode=
+# fourier_relaxed, AMR run is either above, or intentionally left unset and
+# explained inline where it's derived instead (axion_strings.pre_evolution.
+# gamma, amr.n_error_buf, amr.regrid_int -- all auto-derived; amr.n_cell/
+# geometry.prob_extent/evolution.stop_time are also auto-derived and were
+# never meant to be hand-set at all). The parameters below are genuinely
+# optional extras this file doesn't use -- each has a working default
+# (queryAdd, not get, in AxionStringsParams.hpp -- the run does not require
+# them), listed here so nothing settable is left undocumented.
+#
+# axion_strings.pre_evolution.check_interval_coarse (default: 50)
+#   How many steps between xi measurements during relaxation while xi is
+#   still far from xi_target -- measuring xi is itself not free, so this
+#   avoids checking every single step early on.
+# axion_strings.pre_evolution.check_interval_medium (default: 10)
+#   Steps between checks once xi is within check_threshold_medium x of
+#   xi_target (below).
+# axion_strings.pre_evolution.check_interval_fine (default: 2)
+#   Steps between checks once xi is within check_threshold_fine x of
+#   xi_target -- checked most often right before relaxation is expected to
+#   stop, so the handoff to the main run doesn't overshoot by many steps.
+# axion_strings.pre_evolution.check_threshold_medium (default: 1.5)
+#   xi/xi_target ratio below which the "medium" cadence above kicks in.
+# axion_strings.pre_evolution.check_threshold_fine (default: 1.1)
+#   xi/xi_target ratio below which the "fine" cadence above kicks in --
+#   must be between 1.0 and check_threshold_medium.
+#
+# What actually finds strings for refinement, for context on the two
+# threshold parameters below: the tagger's PRIMARY criterion (StringTagger.
+# hpp, always on, no parameter -- not one of the "options" in this list at
+# all) is an exact, parameter-free topological test: does the field's phase
+# wind by a full +-2*pi loop around this cell's corner plaquette? That
+# winding number is an integer (0 or +-1 in practice), not a threshold on a
+# continuous quantity, so there is no "units" question for it -- it is
+# either pierced by a string or it isn't. Schedule-gating (which levels are
+# even allowed to exist yet, driven by log_mr_over_h_i and the level-
+# addition schedule this file's header works out) is entirely separate from
+# this per-cell winding test, and neither of the two parameters below
+# changes it.
+#
+# axion_strings.tagging.gradient_threshold (no typical value to suggest --
+#   Buschmann et al. 2108.05368's own value, 0.04, is flagged in
+#   StringTagger.hpp as "to be assessed, not copied", and testing found it
+#   tags ~100% of the domain for this project's own field statistics)
+#   A SECOND, independent, optional per-cell trigger (a cell can be tagged
+#   by this even where the winding test above says no string pierces it),
+#   despite the name actually a LAPLACIAN (curvature) test, applied
+#   separately to each of the two field components psi1/psi2 (this axion
+#   model's real and imaginary parts, not "axion vs radial" -- see
+#   radial_gradient_threshold below for that split): a cell is tagged if
+#   dx^2*|laplacian(psi_i)| exceeds this threshold, for either component.
+#   Units: DIMENSIONLESS -- dx^2 (comoving length^2) exactly cancels the
+#   Laplacian's 1/length^2, leaving a pure number of order "how much psi
+#   curves across one cell, relative to its own natural O(1) scale" (psi is
+#   normalised by the vacuum value v=1 in this code's units, sec.3).
+#
+# axion_strings.tagging.radial_gradient_threshold (no typical value to
+#   suggest -- off by default, not calibrated against a real network; see
+#   StringTagger.hpp's header comment for why an isolated-string-core
+#   calibration that was tried didn't transfer)
+#   A THIRD, independent, optional per-cell trigger, testing the RADIAL
+#   (amplitude) mode specifically: r = |psi| = sqrt(psi1^2+psi2^2), with
+#   its gradient computed via the proper orthogonal radial/tangential
+#   decomposition (not just combining grad(psi1)/grad(psi2) naively) so it
+#   only responds to genuine amplitude structure, not phase winding. A
+#   cell is tagged if dx*|grad(r)| exceeds this threshold.
+#   Units: also DIMENSIONLESS (dx, comoving length, cancels |grad(r)|'s
+#   1/length) -- but note this is a FIRST derivative of a different,
+#   derived quantity (r), not the same operation as gradient_threshold's
+#   Laplacian of the raw components, so even though both end up
+#   dimensionless "per-cell change, in units of the field's own O(1)
+#   scale", a given numeric value does not mean the same thing for both --
+#   don't assume one gives you intuition for the other.
+#
+# Both are off by default (an effectively infinite threshold) and NOT used
+# by this or any other validated example in this project -- early testing
+# of gradient_threshold at Buschmann et al.'s own value found it flags
+# essentially the whole domain for this project's field statistics. Leave
+# both unset unless you have a specific reason to experiment with them.
+################################################################################

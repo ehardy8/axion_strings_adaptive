@@ -16,6 +16,8 @@
 
 #include <AMReX_MultiFabUtil.H>
 
+#include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -157,8 +159,9 @@ void AxionStringsLevel::variableSetUp()
         return;
     }
 
-    s_background = AxionStringsParams::read_background();
-    s_tau_i      = AxionStringsParams::read_tau_i(s_background);
+    s_background          = AxionStringsParams::read_background();
+    s_tau_i               = AxionStringsParams::read_tau_i(s_background);
+    s_tau_i_at_main_start = s_tau_i;
 
     // Read back AxionStringsParams::apply_box_plan's derived tau_f
     // (informational ParmParse injection; see its own comment) -- absent
@@ -1039,12 +1042,29 @@ void AxionStringsLevel::specific_post_timestep()
             static_cast<double>(counts.n_p_plain), dx, L_tilde,
             s_background.a_inv, s_tau_i);
         const double ratio = xi / s_xi_target;
+        // N_p_required: xi_from_plaquette_count (XiFormula.hpp) is exactly
+        // linear in N_p, so the plaquette count that would give xi_target
+        // is just a rescaling of the one just measured -- equivalent to
+        // XiFormula.hpp's own plaquette_count_for_target_xi, without the
+        // round-trip through reconstructing N from dx/L_tilde to call it.
+        // N_p/N_p_required is the exact same number as ratio above, just
+        // expressed the way the user asked for it (2026-09-22): as a
+        // plaquette-count fraction, not only by proxy via xi.
+        const double n_p_required =
+            (xi > 0.0)
+                ? static_cast<double>(counts.n_p_plain) * (s_xi_target / xi)
+                : std::numeric_limits<double>::infinity();
 
-        amrex::Print() << "  [AxionStrings pre-evolution] tau_pre = "
-                       << tau_pre << "  N_p = " << counts.n_p_plain
-                       << "  xi(at tau_i) = " << xi
-                       << "  target = " << s_xi_target
-                       << "  ratio = " << ratio << "\n";
+        amrex::Print()
+            << "  [AxionStrings pre-evolution] tau_pre = " << tau_pre
+            << "  N_p = " << counts.n_p_plain
+            << "  xi(at tau_i) = " << xi << "  target = " << s_xi_target
+            << "  ratio = " << ratio << "\n"
+            << "  [AxionStrings pre-evolution] RELAXATION PROGRESS: N_p / "
+               "N_p_required = "
+            << counts.n_p_plain << " / " << n_p_required << " = " << ratio
+            << "  (done once this reaches 1.0; the network starts over-"
+               "tangled and this decreases as it relaxes)\n";
 
         // xi generally decreases during relaxation (user's observation):
         // transition the first time it drops to the target rather than
@@ -1318,7 +1338,29 @@ void AxionStringsLevel::specific_post_timestep()
                   ell_comoving_plain
             : 0.0;
 
+    // % of the main run's own conformal-time range elapsed (2026-09-22,
+    // with the user, explicitly as a raw progress indicator, not an
+    // effort estimate: it says nothing about AMR refinement cost, which
+    // dominates wall-clock time and does not track tau linearly at all --
+    // see the AMR-vs-fixed-grid speed comparison in docs/STATUS.md).
+    // Deliberately against s_tau_i_at_main_start, not the live s_tau_i
+    // (which apply_pre_evolution_to_main_rescale() shifts across the
+    // Relaxing -> Evolving transition -- see that member's own comment).
+    const std::string pct_conformal_time_str = [&]() -> std::string
+    {
+        if (!s_has_tau_f)
+        {
+            return "n/a (no derived tau_f -- Moore mode)";
+        }
+        const double pct = 100.0 *
+                           (tau - s_tau_i_at_main_start) /
+                           (s_tau_f - s_tau_i_at_main_start);
+        return std::to_string(pct) + "%";
+    }();
+
     amrex::Print() << "  [AxionStrings] tau = " << tau
+                   << "  (" << pct_conformal_time_str
+                   << " of conformal time elapsed)"
                    << "  N_p = " << counts.n_p_plain
                    << "  N_p_W = " << counts.n_p_weighted
                    << "  xi = " << xi_plain << "  xi_W = " << xi_weighted

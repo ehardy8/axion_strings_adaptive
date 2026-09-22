@@ -71,6 +71,16 @@ class AxionStringsLevel : public GRAmrLevel
     inline static Background s_background{};
     inline static amrex::Real s_tau_i{1.0};
 
+    // The main run's own starting tau, fixed once in variableSetUp() and
+    // never touched again -- unlike s_tau_i above, which
+    // apply_pre_evolution_to_main_rescale() deliberately mutates so that
+    // tau = s_tau_i + a_time keeps working across the Relaxing -> Evolving
+    // transition. Needed wherever "how far through the main run's own tau
+    // range are we" is the question (e.g. the % of conformal time elapsed
+    // printed in specific_post_timestep(), 2026-09-22, with the user) --
+    // s_tau_i alone cannot answer that once relaxation has shifted it.
+    inline static amrex::Real s_tau_i_at_main_start{1.0};
+
     // Box-planning-derived final tau (AxionStringsParams::apply_box_plan's
     // axion_strings.derived_tau_f, read back here), and whether it was
     // actually available (absent in Moore mode -- see okToContinue()).

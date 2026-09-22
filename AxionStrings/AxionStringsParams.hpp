@@ -526,6 +526,72 @@ inline MaskingParams read_masking_params(const std::string &prefix)
 // still needs evolution.stop_time/max_steps set by hand (unaffected by
 // any of this): its box plan does not derive tau_f, so okToContinue()
 // cannot use it there either.
+
+// axion_strings.pre_evolution.gamma default (2026-09-22, with the user):
+// StringTagger.hpp's tag_cells() refines nothing during Phase::Relaxing,
+// and the schedule-gated tagger only brings a finer level online once
+// log(m_r/H) actually crosses *that level's* threshold -- so as long as
+// axion_strings.log_mr_over_h_i is below the level-1 threshold (checked
+// below, not just assumed), the main run genuinely starts with only the
+// coarsest (level-0) grid present, and relaxing at anything other than
+// dx_base would hand off a field resolved at the wrong resolution for the
+// grid it is about to sit on. gamma = 1/dx_base is therefore not a
+// separate choice from the box plan above, just an unstated consequence
+// of it -- so derive it the same way as amr.n_cell/geometry.prob_extent
+// (derive-if-absent, cross-check-if-present) rather than requiring every
+// ic_mode=fourier_relaxed parameter file to compute 1/dx_base by hand,
+// which is exactly the bug class docs/STATUS.md's params_full_test_1024
+// .txt entry documents (a stale/mismatched gamma, caught only because the
+// run's own startup printout was read carefully). Unlike amr.n_cell/
+// geometry.prob_extent above, an explicit mismatch here only *warns*, not
+// errors (2026-09-22, with the user): relaxing at a resolution other than
+// dx_base is a legitimate thing to want deliberately, not only ever a
+// mistake -- the warning still catches the accidental/stale case (the
+// original motivation), it just no longer refuses to run over it.
+inline void apply_pre_evolution_gamma_default(const std::string &ic_mode,
+                                              double dx_base)
+{
+    if (ic_mode != "fourier_relaxed")
+    {
+        return; // no relaxation phase -- gamma is not used at all
+    }
+
+    const double gamma_expected = 1.0 / dx_base;
+    GRParmParse pre_pp("axion_strings.pre_evolution");
+    if (pre_pp.contains("gamma"))
+    {
+        double gamma_set{};
+        pre_pp.get("gamma", gamma_set);
+        if (std::abs(gamma_set - gamma_expected) > 1.0e-6 * gamma_expected)
+        {
+            // Warning, not error (2026-09-22, with the user): a deliberate
+            // choice to relax at a resolution other than dx_base is a
+            // legitimate thing to want, not just a mistake -- this still
+            // surfaces every mismatch (including the accidental,
+            // forgot-to-update-it kind this mechanism exists to catch),
+            // it just no longer refuses to run over it.
+            pre_pp.warning(
+                "gamma",
+                "does not match the box-planning-derived 1/dx_base (level "
+                "0) -- using your value as set. If this wasn't deliberate "
+                "(e.g. a stale value left over from a different N/N1/N2/"
+                "amr.max_level), remove axion_strings.pre_evolution.gamma "
+                "to let it be derived instead (see the box plan printed "
+                "above for the dx_base this run actually uses)");
+        }
+    }
+    else
+    {
+        pre_pp.add("gamma", gamma_expected);
+        amrex::Print()
+            << "  -> axion_strings.pre_evolution.gamma set to "
+            << gamma_expected
+            << " (= 1/dx_base): relaxes at the coarsest/level-0 "
+               "resolution, matching what the main run's own grid looks "
+               "like the moment it starts\n";
+    }
+}
+
 inline void apply_box_plan(const Background &background, double tau_i)
 {
     GRParmParse pp("axion_strings");
@@ -701,6 +767,9 @@ inline void apply_box_plan(const Background &background, double tau_i)
 
     const double c = background.c_sched.c0;
 
+    std::string ic_mode = "homogeneous";
+    GRParmParse("axion_strings").queryAdd("ic_mode", ic_mode);
+
     if (max_level > 0)
     {
         // AMR box plan (2026-09-19, milestone 2 "Phase 0"/wiring):
@@ -741,6 +810,32 @@ inline void apply_box_plan(const Background &background, double tau_i)
                 << "    level " << ell << ": log(m_r/H) = "
                 << plan.log_add[static_cast<std::size_t>(ell - 1)] << "\n";
         }
+
+        if (ic_mode == "fourier_relaxed")
+        {
+            // apply_pre_evolution_gamma_default's whole premise (only the
+            // coarsest level exists when the main run starts) requires
+            // log_mr_over_h_i to sit below level 1's own threshold --
+            // checked here rather than just assumed, so a violation is a
+            // clear startup error instead of a silently under-resolved
+            // relaxed field (2026-09-22, with the user).
+            const double log_mr_over_h_i =
+                -std::log(background.H_over_mr_direct(tau_i));
+            if (log_mr_over_h_i >= plan.log_add[0])
+            {
+                pp.error(
+                    "log_mr_over_h_i",
+                    "is already at or past the level-1 threshold printed "
+                    "above -- the main run would start with level 1 "
+                    "already active, but axion_strings.pre_evolution."
+                    "gamma's default (1/dx_base) assumes only the coarsest "
+                    "level is present at tau_i. Lower log_mr_over_h_i "
+                    "below the level-1 threshold, or set "
+                    "axion_strings.pre_evolution.gamma explicitly at the "
+                    "resolution you actually want to relax at");
+            }
+        }
+        apply_pre_evolution_gamma_default(ic_mode, plan.dx_base);
 
         if (amr_pp.contains("n_cell"))
         {
@@ -853,6 +948,11 @@ inline void apply_box_plan(const Background &background, double tau_i)
         pp.error("N", "the requested N, N1, N2, c configuration gives tau_f "
                       "<= tau_i; cannot evolve forward from tau_i");
     }
+
+    // max_level == 0: no refinement at all, so trivially "only the
+    // coarsest level is present" -- no schedule check needed, unlike the
+    // AMR branch above.
+    apply_pre_evolution_gamma_default(ic_mode, plan.delta_x);
 
     // FYI-only cross-reference to sec.7's L_tilde_init formula for an
     // optional relaxation phase, computed here purely for comparison (see

@@ -854,3 +854,75 @@ readiness (multi-level restart, performance).
     lower plateaus track the independently-established genuine harmonic
     generation, not a new unexplained effect.
 
+**`axion_strings.pre_evolution.gamma` now defaults, rather than being a
+required manual input (2026-09-22, with the user).** Every existing
+`ic_mode = fourier_relaxed` parameter file had to compute `1/dx_base` by
+hand and enter it as `gamma` -- exactly the bug class the
+`params_full_test_1024.txt` entry above documents (a stale/mismatched
+`gamma`, caught only because the run's own startup printout was read
+carefully). Prompted by the user asking, while discussing that entry,
+whether the pre-evolution's resolution should match the main run's
+resolution at `tau_i` -- yes, it should, and checking `tag_cells()`
+confirmed why the existing convention (`gamma = 1/dx_base`) was already
+correct in every validated example: refinement is off entirely during
+`Phase::Relaxing`, and the schedule-gated tagger only brings level 1
+online once `log(m_r/H)` crosses *its own* threshold, so as long as
+`log_mr_over_h_i` sits below that threshold, the main run genuinely
+starts with only the coarsest grid present.
+
+New `apply_pre_evolution_gamma_default()` (`AxionStringsParams.hpp`),
+called from `apply_box_plan()` in both the AMR and uniform-grid branches
+(guarded to `ic_mode == "fourier_relaxed"`, and left untouched for Moore
+mode, which already derives/requires `gamma` its own way): derives
+`gamma = 1/dx_base` and injects it via `GRParmParse::add` if the user
+hasn't set it, or cross-checks an already-set value against that
+derivation and aborts on mismatch -- the same derive-if-absent,
+cross-check-if-present pattern already used for `amr.n_cell`/
+`geometry.prob_extent`/`evolution.stop_time` in the same function, now
+extended to this parameter too. Also added a startup check (AMR branch
+only) that `log_mr_over_h_i` is actually below the level-1 threshold --
+the load-bearing assumption behind "the coarsest level is the only one
+present at `tau_i`" -- and aborts with a clear message rather than
+silently deriving a `gamma` that under-resolves the string cores relative
+to the grid they're about to sit on, if it isn't. Deliberately *not* the
+more general "derive from whichever level is actually active at `tau_i`"
+version discussed first -- the user asked to assume only the coarsest
+level is ever present at the start, matching every existing example, and
+the new safety check turns a violation of that assumption into a startup
+error instead of a silent one.
+
+**Verified**: all 51 existing unit tests still pass (unaffected --
+`BoxPlan.hpp`/`Background.hpp` themselves are untouched, only
+`AxionStringsParams.hpp`'s own injection logic changed). Smoke-tested all
+four paths directly against the real executable on
+`params_amr_validation_128.txt` (AMR) and `params_demo_384_physical.txt`
+(uniform grid, `max_level=0`): `gamma` omitted derives to the exact
+existing hand-set value in both (`5.656854249` vs `5.65685`;
+`19.59591794` vs `19.596`); `gamma` already correct runs with no error;
+`gamma` deliberately wrong aborts with the cross-check message; and
+`log_mr_over_h_i` pushed past the level-1 threshold (with `gamma` unset)
+aborts with the new schedule-violation message, rather than silently
+under-resolving the relaxed field.
+
+**Follow-up, same day: the mismatch check is a warning, not an abort
+(2026-09-22, with the user, asked directly "can gamma still be
+overridden by the user if they want?").** The original cross-check
+aborted on any mismatch, which technically blocked a *deliberate* choice
+to relax at some other resolution, not just an accidental stale value --
+the user asked for exactly this to be possible, so
+`apply_pre_evolution_gamma_default` now calls `GRParmParse::warning`
+(GRTeclyn's existing, already-wired-up non-fatal diagnostic --
+`SetupFunctions.hpp`'s `mainSetup` already surfaces
+`GRParmParse::warnings_issued()` at startup) instead of `.error()` on a
+mismatch, printing the same explanation but letting the run proceed with
+the user's value. The `log_mr_over_h_i`-vs-level-1-threshold safety check
+added above is unchanged and still aborts -- that one guards an assumption
+the *default's derivation itself* depends on (nothing to override there,
+since violating it doesn't correspond to a valid alternative choice, just
+a wrong default). Re-verified: rebuild clean, all 51 unit tests still
+pass, and the deliberately-wrong-`gamma` case now prints
+`Warning from parameter axion_strings.pre_evolution.gamma = 3.0: ...`
+(matching the exact format of the codebase's other parameter warnings,
+e.g. `evolution.stop_time`'s) and completes its steps normally rather
+than aborting.
+

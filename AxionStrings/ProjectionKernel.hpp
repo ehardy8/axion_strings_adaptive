@@ -76,6 +76,17 @@ compute_energy_projection(const amrex::MultiFab &state, amrex::Real dx,
 
     const FourthOrderDerivatives deriv(dx);
 
+    // Deliberately NOT #pragma omp parallel (2026-09-22, with the user,
+    // implementing USE_OMP): every box on this rank writes into the SAME
+    // out.rho_tot_max_unscreened/string_hit_count arrays, indexed by
+    // (i,j) alone -- multiple boxes at different z (a very normal thing
+    // for AMReX's own domain decomposition to produce) hit the *same*
+    // idx, so parallelising this MFIter loop naively would race on both
+    // the max-update and the ++ increment. Fixing that properly needs
+    // per-thread partial buffers merged afterward, not just a pragma --
+    // not worth the complexity for a loop this file's own header comment
+    // already documents as running "once per output snapshot, not every
+    // substep", i.e. never the bottleneck USE_OMP is for.
     for (amrex::MFIter mfi(state); mfi.isValid(); ++mfi)
     {
         const amrex::Box &bx = mfi.validbox();

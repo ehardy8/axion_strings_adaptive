@@ -30,6 +30,28 @@ FFTW_HOME ?= /opt/homebrew/opt/fftw
 # picks up a .FLOAT/.DOUBLE tag either way, so both builds can coexist.
 PRECISION ?= FLOAT
 
+# Multi-threading within one MPI rank (2026-09-22, with the user, asked
+# whether extra --cpus-per-task on a SLURM job actually get used): off by
+# default (GRTeclyn's own Make.defaults sets USE_OMP = FALSE), matching
+# every executable built so far this project. Build with
+# `make USE_OMP=TRUE ...` to turn it on -- the main per-step cost
+# (specific_eval_rhs, all energy/velocity/string-count reductions, the
+# tagger) is already written with amrex::ParallelFor/amrex::ReduceOps
+# over the whole state MultiFab, which AMReX itself thread-splits over
+# boxes via an internal `#pragma omp parallel` when built this way (see
+# amrex/Src/Base/AMReX_MFParallelForC.H and AMReX_Reduce.H) -- no
+# AxionStrings-specific code needed changing for that path. The two
+# hand-written diagnostic loops that do NOT get this for free
+# (ProjectionKernel.hpp, SpectrumKernel.hpp) are deliberately left
+# single-threaded instead of naively parallelised -- see their own
+# comments for why (shared, box-independent accumulator arrays would
+# race). Set OMP_NUM_THREADS to match your SLURM --cpus-per-task when
+# running a USE_OMP=TRUE build (docs/cluster_guide's SLURM template
+# shows this) -- an unset OMP_NUM_THREADS can otherwise grab every core
+# on the node per MPI rank, oversubscribing badly if more than one rank
+# shares that node.
+USE_OMP ?= FALSE
+
 include $(GRTECLYN_HOME)/Tools/GNUMake/Make.defs
 
 include $(AMREX_HOME)/Src/Base/Make.package

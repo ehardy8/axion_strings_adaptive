@@ -72,6 +72,17 @@ compute_spectrum(const amrex::MultiFab &field, const amrex::Geometry &geom)
     double full_cube_energy       = 0.0;
     double inscribed_sphere_energy = 0.0;
 
+    // Deliberately NOT #pragma omp parallel (2026-09-22, with the user,
+    // implementing USE_OMP): shell_sum/shell_count are indexed by
+    // spherical k-shell, not by box, so boxes covering different parts
+    // of k-space routinely land in the *same* shell -- and full_cube_
+    // energy/inscribed_sphere_energy are plain scalar accumulators.
+    // Parallelising this MFIter loop naively would race on all four.
+    // Same call as ProjectionKernel.hpp's identical case: this file's
+    // own header comment already documents it as "computed once per
+    // snapshot, not every substep", so it's not the bottleneck USE_OMP
+    // is for, and a correct parallel version needs thread-local partial
+    // reductions merged afterward, not just a pragma.
     for (amrex::MFIter mfi(spectral); mfi.isValid(); ++mfi)
     {
         const amrex::Box &bx = mfi.validbox();

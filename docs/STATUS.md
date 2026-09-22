@@ -926,3 +926,78 @@ pass, and the deliberately-wrong-`gamma` case now prints
 e.g. `evolution.stop_time`'s) and completes its steps normally rather
 than aborting.
 
+**Multi-threading (`USE_OMP`) enabled, after the user asked whether extra
+`--cpus-per-task` on a SLURM job actually get used (2026-09-22).**
+
+Audited every parallel loop in `AxionStrings/` (not just spot-checked)
+before touching anything, since a naive "just turn OpenMP on" is exactly
+the kind of change that can silently corrupt output via a data race
+without ever crashing. Two things made this audit tractable:
+- `grep -rl MFIter *.hpp *.cpp` found only two files with a hand-written
+  MFIter loop (`ProjectionKernel.hpp`, `SpectrumKernel.hpp`) -- every
+  other per-cell kernel in the project (`specific_eval_rhs`, the tagger,
+  every `initData` IC branch, the pre-evolution->main rescale) already
+  goes through `amrex::ParallelFor(some_multifab, ...)`, and every
+  reduction (`EnergyKernel.hpp`, `VelocityKernel.hpp`, `StringFinder.hpp`)
+  through `amrex::ReduceOps`.
+- Read AMReX's own CPU implementation of both
+  (`amrex/Src/Base/AMReX_MFParallelForC.H`'s `ParallelFor_doit`,
+  `amrex/Src/Base/AMReX_Reduce.H`) rather than assuming: both already
+  wrap their internal `MFIter` loop in `#ifdef AMREX_USE_OMP #pragma omp
+  parallel #endif`, tiled per-box. So every one of those call sites was
+  *already* thread-safe and gets real multi-threading for free the moment
+  `USE_OMP=TRUE` is set at build time -- no AxionStrings-specific kernel
+  code needed to change for the main per-step cost (the RHS evaluation)
+  or any of the routine diagnostics.
+
+The two hand-written exceptions were a genuine hazard, not a formality:
+`ProjectionKernel.hpp`'s `compute_energy_projection` and
+`SpectrumKernel.hpp`'s `compute_spectrum` both accumulate into shared
+arrays/scalars indexed by something *other* than which box a thread is
+processing (`(i,j)` column and k-shell respectively) -- multiple boxes on
+one rank routinely land in the same output slot (a very ordinary
+consequence of AMReX's own domain decomposition), so wrapping either
+loop's existing `#pragma omp parallel` would race on the max-update,
+`++`, and `+=` accumulations. Fixing that properly needs per-thread
+partial buffers merged afterward; both files' own header comments already
+document them as running "once per output snapshot, not every substep",
+i.e. not the cost `USE_OMP` exists for, so the right call was to leave
+both loops deliberately single-threaded and document *why* directly next
+to the loop (not just in this entry, where it would be easy to miss),
+rather than either race silently or spend the complexity budget on a path
+that was never the bottleneck.
+
+`AxionStrings/GNUmakefile` now documents `USE_OMP` (default `FALSE`,
+matching GRTeclyn's own default and every executable built so far) as an
+explicit, available `make USE_OMP=TRUE ...` flag, with the reasoning
+above summarised right there for whoever next needs it.
+
+**Verified**: all 51 unit tests pass and the existing non-OMP build
+(`COMP=llvm`, this project's own Mac toolchain) still compiles and links
+cleanly after the `ProjectionKernel.hpp`/`SpectrumKernel.hpp`/
+`GNUmakefile` edits (comments only for the first two -- no behaviour
+change there either way).
+
+**Not verified locally, flagged honestly rather than glossed over**:
+actually compiling and running a `USE_OMP=TRUE` build. Six attempts
+across three toolchains on this Mac all failed for reasons specific to
+*this machine*, not the code: Apple's system clang (what `mpicxx` wraps
+by default here) doesn't support `-fopenmp` at all; Homebrew's LLVM
+supports it but its libc++ `<math.h>` conflicts with the Apple SDK
+(`FP_INFINITE`/`FP_NORMAL` undeclared) -- the exact, already-documented
+issue this file's own toolchain note works around by putting `/usr/bin`
+first, which is precisely what removes OpenMP support; and Homebrew's GCC
+16 hits its own SDK header search-path issue (`wchar.h`/`stdlib.h` not
+found) that a couple of quick `CPATH`/sysroot attempts didn't resolve.
+None of these are expected to occur on a real Linux cluster (`COMP=gnu`
+against a native system GCC, which is what the cluster guide already
+recommends) -- but this means the `USE_OMP=TRUE` path has only been
+verified by careful reading of AMReX's own source, not by an actual
+multi-thread run compared against a single-thread one on this codebase.
+**First thing to do on a real cluster**: build with `USE_OMP=TRUE`, run a
+short test at `OMP_NUM_THREADS=1` and again at `OMP_NUM_THREADS=4` (or
+similar) on the same seed, and diff `network_scalars.dat` -- if the two
+aren't identical (or at least statistically indistinguishable for a
+`fourier_relaxed` run with genuine floating-point reduction-order
+sensitivity), something in this audit missed a case.
+

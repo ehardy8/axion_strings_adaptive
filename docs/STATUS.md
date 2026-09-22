@@ -792,3 +792,65 @@ readiness (multi-level restart, performance).
   multi-level static grid, split by *actual dx*, not by the two headline
   boundaries -- any region spanning more than one resolution internally
   will hide this kind of substructure.
+
+  **Semi-analytic derivation (2026-09-21, with the user, asked to confirm
+  the recovery is understood, not just observed)**: derived the reversible
+  measurement bias directly from `FourthOrderDerivatives::diff1`'s own
+  weights (`weight_far=1/12`, `weight_near=2/3`) rather than fitting it,
+  and used it to explain two things the region-split account above didn't:
+  why the *uniform*-grid controls (original single-boundary test) showed
+  ~99% retention despite sitting at the same "marginal" 4 points/wavelength
+  as the boundary test's coarse side, and why the severe run's troughs
+  (~62-70%) go well below the naive single-mode prediction for its
+  intermediate zone.
+  - For a pure mode `cos(kx)`, `diff1` measures an effective wavenumber
+    `k_eff` with `k_eff*dx = 2*(weight_near*sin(k dx) - weight_far*sin(2 k
+    dx))`; gradient energy is suppressed by the exact, phase-independent
+    factor `T(N) = (k_eff/k)^2` for `N = lambda/dx` points per wavelength.
+    Verified numerically (apply the real stencil to the actual IC formula,
+    compare to the continuum-exact gradient computed by finite-differencing
+    a 200x finer sample): `T(8)=0.976`, `T(4)=0.721`, `T(2)=0.000` (exact
+    null at Nyquist) -- matches the closed form to machine precision.
+  - `Pi2`'s own energy (point samples, no derivative operator) is exactly
+    *unbiased* for `N>=3` -- a discrete-orthogonality fact (the sampled
+    mean square of `cos(kx+phi)` over any `N>=3` uniformly spaced points
+    per period is exactly `1/2` for *any* phase `phi`) confirmed
+    numerically to 4 decimal places at `N=4` and `N=8`. **This is why the
+    uniform-grid controls looked fine**: `total_energy`'s reported
+    percentage is `E(t)/E(0)`, and on a uniform grid both `E(0)` and every
+    later `E(t)` carry the *same* resolution's bias, which cancels in the
+    ratio -- a uniform grid can never reveal this effect via its own
+    energy-conservation trace, only a resolution *change* between the
+    numerator and denominator can, which is exactly what the boundary
+    tests are.
+  - Assuming equipartition (exact for this IC: kinetic and gradient
+    energy are equal by construction, `Pi2=-dpsi2/dx` at `t=0`) and
+    `Pi2` unbiased, the predicted measured fraction after a pure `N=8->N=4`
+    move is `(1+T(4))/(1+T(8)) = 87%` -- reproduced almost exactly by
+    `analysis/wave_boundary_test/nyquist_measurement_bias_semianalytic.png`
+    (right panel), and the severe run's *plateaus* (95%, 90%, 85%,
+    decreasing slightly on each successive bounce) sit close under this
+    model's trivial 100% self-consistency check, the residual gap being
+    the already-established small genuine loss (harmonic generation) on
+    top of the reversible piece.
+  - But the *troughs* (~62-70%, and noticeably jittery/noisy rather than
+    smooth) go well below the 87% "purely N=4" prediction. Exactly at
+    `N=2` (Nyquist), the discrete-orthogonality argument above breaks
+    down -- the sampled mean square of `cos(kx+phi)` at `N=2` is
+    `cos^2(phi)`, genuinely phase-dependent, so **even the kinetic term
+    can nearly vanish** depending on the wave's exact alignment with the
+    grid at that instant (checked numerically for the severe packet's
+    actual phase at `x=12`/`x=60`: measured kinetic and gradient both
+    collapsed to ~1-3% of true). The severe wave doesn't sit purely at
+    `N=4`; it grazes these `N=2` Nyquist walls each bounce, so both terms
+    can transiently collapse together -- explaining both the extra depth
+    of the troughs beyond the single-mode `N=4` estimate and their jitter
+    (a phase-alignment effect, not noise in the usual sense).
+  - **Answer to "are we sure the energy increase on re-entering the
+    finest region is understood": yes** -- it is the same reversible
+    stencil bias recalibrating back toward its `N=8` value, not energy
+    being created; the analytic model predicts the recovery scale
+    correctly, and the leftover few-percent gap plus the progressively
+    lower plateaus track the independently-established genuine harmonic
+    generation, not a new unexplained effect.
+

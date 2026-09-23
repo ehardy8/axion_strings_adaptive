@@ -344,6 +344,7 @@ inline StringTaggerParams read_tagging_params()
     {
         pp.error("radial_gradient_threshold", "must be > 0");
     }
+    pp.queryAdd("force_full_refinement", params.force_full_refinement);
     return params;
 }
 

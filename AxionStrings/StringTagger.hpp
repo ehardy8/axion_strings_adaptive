@@ -92,6 +92,16 @@ struct StringTaggerParams
     // default (same "genuinely off" convention as gradient_threshold
     // above), axion_strings.tagging.radial_gradient_threshold to enable.
     double radial_gradient_threshold{std::numeric_limits<double>::max()};
+
+    // Force every cell, at every level up to amr.max_level, to be tagged
+    // unconditionally from the start of the main run -- bypassing both
+    // this struct's own criteria above and AxionStringsLevel::tag_cells()'s
+    // schedule-gating entirely (2026-09-24, with the user: a refinement-
+    // systematics control, not a production setting -- see
+    // AxionStringsLevel::tag_cells()'s own comment for the full rationale
+    // and docs/STATUS.md for the comparison this exists to enable). Off by
+    // default.
+    bool force_full_refinement{false};
 };
 
 class StringTagger

@@ -199,4 +199,21 @@ axion_strings.output_delta_log_mr_over_h = 0.2
 # of gradient_threshold at Buschmann et al.'s own value found it flags
 # essentially the whole domain for this project's field statistics. Leave
 # both unset unless you have a specific reason to experiment with them.
+#
+# axion_strings.tagging.force_full_refinement (default: false)
+#   A refinement-systematics control, not a production setting: when true,
+#   every cell at every level up to amr.max_level is tagged unconditionally
+#   from the start of the main run, bypassing both the criteria above and
+#   the schedule-gating that normally only allows a level to come online
+#   once log(m_r/H) crosses its own threshold. Once AMReX's own regrid has
+#   cascaded through all amr.max_level levels (a few regrid cycles after
+#   the main run starts, not literally the first step -- a regrid can only
+#   add one level at a time), this is equivalent to a uniform full-
+#   resolution grid, reached via the same AMR machinery rather than a
+#   separate non-adaptive code path. Intended use: run the same seed/IC
+#   twice, once with normal (adaptive) tagging and once with this set, and
+#   compare the resulting observables (xi, energies, spectrum, ...) -- if
+#   AMR is not biasing the physics, they should agree (docs/STATUS.md has
+#   a first small-grid comparison). Refining everything defeats AMR's
+#   entire cost advantage, so leave this unset for any real ensemble run.
 ################################################################################

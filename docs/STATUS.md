@@ -1137,3 +1137,69 @@ smoothed after the fact) was discussed with the user but not implemented
 -- the smoothstep fix above was judged sufficient once verified. Revisit
 if a future config needs `xi` at handoff decoupled from what the smoothed-
 jump default happens to produce.
+
+- **Added and tested (2026-09-24, with the user): `axion_strings.tagging.
+  force_full_refinement`, a refinement-systematics control -- does AMR
+  itself bias any observable, as opposed to just trading cost for
+  resolution?**
+
+Prompted by an earlier finding the same day (`N_p` jumping discontinuously
+right at a level's onset in an AMR run, see the `tension_core_only` drift
+entry above) -- the user wanted a direct way to test whether refinement
+*itself* biases measured observables, not just resolution. New `bool
+StringTaggerParams::force_full_refinement` (default `false`,
+`axion_strings.tagging.force_full_refinement`): when set, `tag_cells()`
+tags every cell at every level unconditionally, bypassing both the
+string-based criteria and the schedule-gating that normally only permits
+a level once `log(m_r/H)` crosses its own threshold. Placed in
+`AxionStringsLevel::tag_cells()` right after the existing `Phase::
+Relaxing` early return (relaxation never refines regardless of this flag,
+so both an ordinary and a fully-refined run share bit-identical relaxed
+ICs) and before the schedule-gating block. Uses the same per-cell
+`amrex::TagBox::SET` pattern `StringTagger`'s own kernel already uses,
+not a new API. Documented in `params_cluster_512base_2level.txt`'s
+reference block.
+
+**Verified the mechanism directly** (`N=128`, `max_level=2`, physical,
+otherwise matching the validated `params_tagger_smoke_test.txt` config):
+confirmed via the run's own regrid trace that with the flag set, level 1
+*and* level 2 both come online at "100% of domain" within 2-3 regrid
+cycles of the main run starting (`TIME=3.5355` at handoff; level 1 by
+`TIME=3.606`, level 2 by `TIME=3.606` too) -- not literally the first
+step, since AMReX's regrid can only add one level per cycle, but
+effectively immediate. The ordinarily-tagged run, same seed, instead
+brings level 1 online later (`TIME=4.808`) and only partially (~40-43%
+of the domain), exactly as expected from the string-based criteria.
+
+**Then ran the actual A/B comparison this feature exists for**: same
+seed/IC, `k_max_over_mr=16`, `xi_target=1.0`, masking scheme B, one run
+with ordinary adaptive tagging and one with `force_full_refinement=1`.
+Compared `xi` and `tension_core_only` across `tau=1.72` to `11.05` --
+spanning well before, during, and after the adaptive run's own level-1
+(`tau~4.8`) and level-2 onsets. **Result**: `xi` and `tension_core_only`
+agree to within ~0-3% at every single snapshot, with no discontinuity or
+growing divergence at either refinement transition; from `tau~6.1`
+onward the two runs' `N_p` become numerically identical and the
+differences drop to exactly 0.0% (the adaptive tagger has independently
+reached ~100% coverage by then too, at this small scale/short duration).
+`N_p` itself (the raw plaquette count, not length-normalised) differs by
+up to ~4x throughout the early/mid range -- expected and not a concern:
+the fully-refined run has far more fine cells everywhere, so it detects
+more raw windings, but `xi`/`tension_core_only` correctly length-weight
+per level (`ell_comoving = (2/3) * Sum_l N_p_l * dx_l`), so the *physical*
+quantities converge even though the raw count doesn't.
+
+**Caveats, since this was a first, quick check, not a rigorous
+validation**: small grid (`N=128`), short duration, one seed. The
+adaptive run's own tagged fraction converges to ~100% (matching
+`force_full_refinement` exactly by construction) well before the run
+ends at this scale, so the most informative window is really the earlier
+part (`tau<6`) where adaptive coverage is genuinely partial (~40%) yet
+still tracks the fully-refined reference to within a few percent -- a
+bigger box, run for longer, would keep that partial-coverage regime
+informative for a larger fraction of the run, and multiple seeds would
+give a real error bar on the residual differences rather than a single
+noisy trace. Not done as part of this first pass. Not a production
+setting either way: refining everything discards AMR's entire cost
+advantage, so `force_full_refinement` should only ever be used for this
+kind of systematics check, never for an ensemble run.

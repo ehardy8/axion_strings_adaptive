@@ -1764,6 +1764,29 @@ void AxionStringsLevel::tag_cells(amrex::TagBoxArray &tags,
         return;
     }
 
+    // Refinement-systematics control (2026-09-24, with the user): tag
+    // every cell at every level unconditionally, bypassing both the
+    // schedule-gating below and the string-based criteria entirely --
+    // for A/B testing whether AMR refinement itself biases any measured
+    // observable, by comparing an ordinarily-refined run against an
+    // identical-IC run with this flag set (which, once AMReX's own
+    // regrid cascades through all amr.max_level levels -- a few regrid
+    // cycles after the main run starts, not literally the very first
+    // step, since a regrid can only add one level at a time -- becomes
+    // equivalent to a uniform full-resolution grid, using the same AMR
+    // machinery rather than a separate non-adaptive code path). Not a
+    // production setting: refining everything defeats AMR's entire cost
+    // advantage. Off by default.
+    if (s_tagging_params.force_full_refinement)
+    {
+        const auto &tag_arrs = tags.arrays();
+        amrex::ParallelFor(
+            tags, [=] AMREX_GPU_DEVICE(int box_no, int ix, int iy, int iz)
+            { tag_arrs[box_no](ix, iy, iz) = amrex::TagBox::SET; });
+        amrex::Gpu::streamSynchronize();
+        return;
+    }
+
     // Schedule-gating: only allow tagging to create the next level once
     // log(m_r/H) has actually reached its threshold (BoxPlan.hpp::
     // compute_amr_box_plan) -- otherwise the current level's own

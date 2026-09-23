@@ -52,20 +52,44 @@ struct MaskingParams
                            // been tried without reconciliation)
 };
 
-// Whether this lattice point counts towards the effective point count used
-// for unbiased spatial averaging (conventions.md sec.10: "the effective
-// number of lattice points averaged over must be multiplied by the same
-// masking factor"). 1 for None/A (no top-hat); 0 or 1 for B.
+// The per-cell masking weight: what every screened quantity (energies in
+// EnergyKernel.hpp, and the effective point count used for unbiased
+// spatial averaging, conventions.md sec.10: "the effective number of
+// lattice points averaged over must be multiplied by the same masking
+// factor") is multiplied by.
+//   None: 1 identically (no screening at all).
+//   B:    0 or 1 (hard top-hat).
+//   A:    the smooth weight conventions.md's masking section gives
+//         explicitly, f = (1 + r/f_a)^2, r = |phi| - v the radial
+//         deviation from vacuum (the same r Energy.hpp's radial_*_energy_
+//         pointwise functions use), f_a = sqrt(2) v the axion decay
+//         constant -- in terms of the already-computed mod = |psi|/R =
+//         |phi|/v (v=1, code units), r = mod - 1.
+// (2026-09-25, with the user: scheme A previously fell through to the
+// same "return 1.0" as None here, i.e. it was a silent no-op for every
+// energy diagnostic -- this fills that gap in with the formula
+// conventions.md actually specifies. masked_a_dot's own bare-numerator
+// scheme-A branch below is conventions.md's *other*, independently-stated
+// form of scheme A, specific to a_dot's own construction, and is
+// unaffected by this.)
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE double
 masking_weight(const MaskingParams &params, double psi1, double psi2,
               double R)
 {
-    if (params.scheme != MaskingScheme::B)
+    if (params.scheme == MaskingScheme::None)
     {
         return 1.0;
     }
     const double mod = std::sqrt(psi1 * psi1 + psi2 * psi2) / R;
-    return (mod >= params.threshold) ? 1.0 : 0.0;
+    if (params.scheme == MaskingScheme::B)
+    {
+        return (mod >= params.threshold) ? 1.0 : 0.0;
+    }
+    // Scheme A.
+    constexpr double f_a = 1.4142135623730951; // sqrt(2) v, v = 1
+    const double r        = mod - 1.0;         // |phi| - v, v = 1
+    const double f        = 1.0 + r / f_a;
+    return f * f;
 }
 
 // The masked axion time-derivative written into the FFT buffer.

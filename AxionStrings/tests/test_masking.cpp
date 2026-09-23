@@ -98,9 +98,15 @@ TEST_CASE("T2a: scheme A is the bare numerator, undivided, no top-hat")
     const double raw = psi1 * Pi2 - Pi1 * psi2;
     CHECK(masked_a_dot(a_params, psi1, psi2, Pi1, Pi2, R) ==
           doctest::Approx(raw).epsilon(1.0e-12));
-    // Scheme A has no top-hat, so it always counts for the effective point
-    // count, even here.
-    CHECK(masking_weight(a_params, psi1, psi2, R) == 1.0);
+    // Scheme A has no top-hat (unlike B, nothing is ever hard-zeroed), but
+    // it is not a silent no-op either: conventions.md's smooth weight
+    // f = (1 + r/f_a)^2, r = |phi|-v = mod-1, still suppresses this
+    // deep-inside-the-core point substantially below 1.
+    const double f_a      = 1.4142135623730951; // sqrt(2) v, v = 1
+    const double mod      = std::sqrt(psi1 * psi1 + psi2 * psi2) / R;
+    const double f         = 1.0 + (mod - 1.0) / f_a;
+    CHECK(masking_weight(a_params, psi1, psi2, R) ==
+          doctest::Approx(f * f).epsilon(1.0e-12));
 }
 
 // --- T2b: boosted straight string -------------------------------------

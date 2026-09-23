@@ -294,18 +294,40 @@ any observable.
 \label{sec:masking}
 The axion phase rate $\theta' = (\psivec_1\Pi_2-\Pi_1\psivec_2)/|\psivec|^2$ genuinely diverges near a string
 core ($|\psivec|\to0$), so any spectrum or energy built from it must exclude the core region before
-transforming or summing -- applied at exactly one place (filling the buffer handed to the FFT/reduction),
-not inlined at several call sites, so an index or threshold error cannot silently diverge between them.
-Three schemes:
+transforming or summing. Two, largely independent mechanisms carry this out, one per quantity type,
+each applied at exactly one place -- not inlined at several call sites, so an index or threshold error
+cannot silently diverge between them.
+
+\textbf{Energies} (Section~\ref{sec:energies}: $\rho_{\rm tot}$, axion and radial kinetic/gradient/mass) are
+screened by a single multiplicative weight $w$, $\rho^{\rm scr}=w\,\rho^{\rm unscr}$, also used to correct
+the effective point count in any spatial average over masked data ($n_{\rm unmasked}$ below):
 \begin{itemize}
-  \item \textbf{None} ($f=1$): unscreened pass, required for every screened/unscreened energy or spectrum
-        pair (Sections~\ref{sec:energies},~\ref{sec:spectrum}) and for the tension's core+tail term.
-  \item \textbf{A}: the bare numerator $\psivec_1\Pi_2-\Pi_1\psivec_2$, no division, no top-hat.
-  \item \textbf{B}: the genuine phase rate $\theta'$ above, top-hat zeroed wherever $|\psivec|/R$ is below a
-        runtime \texttt{threshold} (default $0.8$, not a settled choice -- $0.9$, $0.95$ have also been
-        tried without reconciling on one value). The same $0/1$ top-hat is also the weight used to correct
-        the effective point count in any spatial average over masked data (e.g.\ $n_{\rm unmasked}$ below).
+  \item \textbf{None}: $w=1$ identically -- the required unscreened pass every screened/unscreened pair
+        needs (Sections~\ref{sec:energies},~\ref{sec:spectrum}) and the tension's core+tail term.
+  \item \textbf{A} (smooth): $w = \big(1+r/f_a\big)^2$, $r\equiv|\phi|-v$ the radial deviation from vacuum
+        (Section~\ref{sec:energies}'s own $r$), $f_a=\sqrt2\,v$ -- no hard cutoff, but a substantial,
+        continuously-varying suppression near a core ($w\approx0.09$ exactly at $|\phi|=0$, rising to $1$ in
+        the far field).
+  \item \textbf{B} (top-hat): $w=1$ where $|\psivec|/R$ is at or above a runtime \texttt{threshold} (default
+        $0.8$, not a settled choice -- $0.9$, $0.95$ have also been tried without reconciling on one value),
+        $0$ below it.
 \end{itemize}
+
+\textbf{The axion spectrum} (Section~\ref{sec:spectrum}) instead masks by construction, filling the FFT
+buffer with
+\[
+\dot a_{\rm scr} \propto
+\begin{cases}
+\theta' = (\psivec_1\Pi_2-\Pi_1\psivec_2)/|\psivec|^2 & \text{None (unscreened),} \\
+\psivec_1\Pi_2-\Pi_1\psivec_2 & \text{A (bare numerator, no division),} \\
+\theta'\ \text{with the scheme-B top-hat above} & \text{B.}
+\end{cases}
+\]
+Scheme A's bare numerator is $=|\psivec|^2\theta'$ -- also a smooth, no-hard-cutoff suppression, but a
+different one, specific to this construction, not literally $w\cdot\theta'$ with the same $w$ used for
+energies above. \texttt{compute\_spectrum} requires scheme B specifically (checked at startup) -- the
+persisted spectrum must be the genuinely screened field, so scheme A's spectrum branch, while implemented,
+is never actually reachable in the saved \texttt{axion\_spectrum.dat} output.
 
 \section{Observables}
 \label{sec:observables}

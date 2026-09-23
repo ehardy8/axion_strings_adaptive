@@ -1203,3 +1203,42 @@ noisy trace. Not done as part of this first pass. Not a production
 setting either way: refining everything discards AMR's entire cost
 advantage, so `force_full_refinement` should only ever be used for this
 kind of systematics check, never for an ensemble run.
+
+- **Bug found and fixed (2026-09-25, with the user): `axion_strings.masking.scheme = A` was a silent
+  no-op for every energy diagnostic -- `screened` and `unscreened` came out numerically identical.**
+
+Found while writing the network-evolution physics reference PDF: the user asked directly whether
+scheme A screens energies by multiplying by `|psi|/R`, and checking `Masking.hpp::masking_weight()`
+against that showed it returned `1.0` unconditionally for anything other than scheme B --
+`rho_tot_screened`, both axion energies, and all three radial energies were therefore identical to
+their own unscreened values under scheme A, for every run that has ever used it. This did not affect
+scheme B (the default, and the only scheme `compute_spectrum` allows) or scheme None.
+
+**Root cause and fix**: `masking_weight()` only ever implemented scheme B's hard top-hat; scheme A
+fell through to the same `return 1.0` as None, rather than the smooth weight `initialMD/conventions.md`
+actually specifies for it, `f = (1 + r/f_a)^2` (`r = |phi| - v` the radial deviation from vacuum, the
+same `r` `Energy.hpp`'s `radial_*_energy_pointwise` functions use; `f_a = sqrt(2) v`). Implemented
+exactly as specified -- in terms of the already-computed `mod = |psi|/R`, `r = mod - 1` -- giving `w`
+that varies smoothly from `~0.086` at the exact core (`|phi|=0`) up to `1` in the far field, no hard
+cutoff. `masked_a_dot()`'s own scheme-A branch (the bare numerator, no division) was already correct
+and is conventions.md's *other*, independently-stated form of scheme A -- specific to the axion-kinetic
+spectral quantity, algebraically distinct from `w` above (a `|psi|^2`-type weighting on that one
+quantity, not literally `w * theta_prime`) -- left unchanged.
+
+**Verified**: `tests/test_masking.cpp`'s existing T2a case asserted `masking_weight(scheme=A, ...) ==
+1.0` for a point deep inside a core -- itself a symptom of the bug, now replaced with a check against
+the correct formula (54/54 unit tests passing). Confirmed live in a real `fourier_relaxed` run
+(`masking.scheme=A`): `n_unmasked` is now a genuinely continuous value (`3835.89` out of `n_total=
+4096`, not an integer/exact match) rather than always equal to `n_total`, and screened energies now
+visibly differ from unscreened (e.g. `rho_axion_kin`: unscreened `1.172`, screened `0.429`, at one
+snapshot) rather than being identical.
+
+**Practical impact**: since `compute_spectrum` requires scheme B, and every validated example file in
+this project uses either B (with spectrum on) or leaves masking unset (default `A` in `MaskingParams`,
+but never exercised for energies before this fix since nothing reads `rho_*_screened` under scheme A in
+any checked-in analysis unless a user explicitly ran with `masking.scheme=A` and looked at the
+screened energy columns specifically) -- no checked-in validated result is known to depend on the buggy
+behaviour, but any past ad hoc run that *did* set `masking.scheme=A` to inspect screened energies would
+have silently gotten the unscreened values back. `docs/physics_reference/network_evolution_physics.tex`'s
+masking section was rewritten at the same time to describe both mechanisms (the energy weight `w` and
+the spectrum-only `masked_a_dot` construction) separately and correctly.

@@ -327,6 +327,28 @@ default choice above). All four have settled, essentially fixed typical values, 
   change casually.
 \end{description}
 
+\subsection{The handoff from relaxation to the main run}
+\label{sec:handoff-smoothing}
+
+Relaxation and the main run use \emph{different} background schedules --- relaxation deliberately holds
+$m_r/H$ fixed so the network can settle onto an attractor quickly, while the main run lets $m_r/H$ grow (that
+growth is the whole point of the simulation). This means the two schedules' $\lambda(\tau)$ (and hence the
+string core's natural comoving width) generically disagree at whatever moment relaxation happens to finish,
+and switching between them with no further care excites a measurable, spurious transient: an oscillatory
+exchange between the radial mode's kinetic and potential energy, and a bump in the axion spectrum near the
+old core scale that only slowly migrates towards the new one. Neither is removed by the usual masking
+scheme.
+
+\texttt{axion\_strings.pre\_evolution.handoff\_transition\_n\_periods} (\textbf{default \texttt{3.0}}, on by
+default) fixes this by blending $\lambda$ and \texttt{curvature\_term\_coeff} smoothly from their
+relaxation-phase values to the main schedule's own values over this many main-schedule core-oscillation
+periods, instead of switching instantaneously. Direct comparison (relaxing the exact same random field, with
+and without this smoothing) found the transient's amplitude drops by several times with the default of
+\texttt{3}; doubling it to \texttt{6} bought no further improvement, so \texttt{3} was kept as the standing
+default rather than left as something you need to opt into. You do not need to set this yourself --- it is
+listed here so you know it exists and what it's protecting against. Set it to \texttt{0} only if you have a
+specific reason to reproduce the old instantaneous-jump behaviour.
+
 \subsection{A note on \texttt{amr.max\_grid\_size}}
 
 This one doesn't change the physics at all, only how the domain is chopped up for parallel processing ---

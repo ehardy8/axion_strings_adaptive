@@ -123,6 +123,22 @@ class AxionStringsLevel : public GRAmrLevel
     inline static long s_steps_since_xi_check{0};
     inline static long s_xi_check_interval{50};
 
+    // Handoff lambda/curvature_term_coeff smoothing, on by default at 3
+    // periods (2026-09-23, with the user -- see AxionStringsParams::read_
+    // handoff_transition_n_periods() for the full rationale, including why
+    // 3 was kept as the standing default rather than left opt-in).
+    // s_handoff_transition_dtau <= 0.0 means "off" (only reachable by
+    // explicitly setting the parameter to 0) or "not yet computed" --
+    // specific_eval_rhs only blends when it is strictly positive. All four
+    // are set once, in apply_pre_evolution_to_main_rescale(), from values
+    // frozen at the instant of handoff; s_handoff_transition_n_periods
+    // itself is read once in variableSetUp().
+    inline static double s_handoff_transition_n_periods{0.0};
+    inline static amrex::Real s_handoff_transition_tau_start{0.0};
+    inline static amrex::Real s_handoff_transition_dtau{0.0};
+    inline static amrex::Real s_handoff_lambda_start{0.0};
+    inline static amrex::Real s_handoff_curvature_start{0.0};
+
     // Whether each output file's header has been written yet (fresh-run
     // bookkeeping only -- a genuine restart never re-writes a header, see
     // specific_post_timestep).

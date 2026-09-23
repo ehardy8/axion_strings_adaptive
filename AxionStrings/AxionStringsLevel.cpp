@@ -195,6 +195,8 @@ void AxionStringsLevel::variableSetUp()
         s_xi_target       = AxionStringsParams::read_xi_target();
         s_xi_cadence       = AxionStringsParams::read_xi_check_cadence();
         s_xi_check_interval = s_xi_cadence.coarse_interval;
+        s_handoff_transition_n_periods =
+            AxionStringsParams::read_handoff_transition_n_periods();
         s_phase = Phase::Relaxing;
     }
     else
@@ -878,6 +880,28 @@ void AxionStringsLevel::specific_eval_rhs(amrex::MultiFab &a_soln,
         lambda                 = s_background.lambda(tau);
         const amrex::Real R_val = s_background.R(tau);
         R_squared               = R_val * R_val;
+
+        // Optional post-handoff smoothing (apply_pre_evolution_to_main_
+        // rescale()'s comment has the full rationale): blend away from
+        // the frozen pre-evolution lambda/curvature_term_coeff instead of
+        // starting the main schedule's values with a jump. Smoothstep is
+        // value-continuous and has zero slope at both t=0 and t=1, so the
+        // blend itself introduces no new dlambda/dtau kick, and splices
+        // exactly onto the ordinary schedule once t >= 1.
+        if (s_handoff_transition_dtau > 0.0)
+        {
+            const amrex::Real t =
+                (tau - s_handoff_transition_tau_start) / s_handoff_transition_dtau;
+            if (t < 1.0)
+            {
+                const amrex::Real tc =
+                    amrex::Clamp(t, amrex::Real(0.0), amrex::Real(1.0));
+                const amrex::Real s = tc * tc * (3.0 - 2.0 * tc);
+                lambda = (1.0 - s) * s_handoff_lambda_start + s * lambda;
+                curvature_coeff =
+                    (1.0 - s) * s_handoff_curvature_start + s * curvature_coeff;
+            }
+        }
     }
 
     const auto dx                 = Geom().CellSize(0);
@@ -1805,6 +1829,52 @@ void AxionStringsLevel::apply_pre_evolution_to_main_rescale()
                        << ", R_pre = " << R_pre
                        << ", R_main(tau_i) = " << R_main
                        << ", kappa = " << kappa << "\n";
+    }
+
+    // Optional lambda/curvature_term_coeff smoothing across the handoff
+    // (AxionStringsParams::read_handoff_transition_n_periods()'s comment
+    // has the full rationale: the R-rescale above matches psi/Pi exactly,
+    // but lambda and curvature_term_coeff themselves still jump between
+    // the pre-evolution and main schedules, which excites a measurable
+    // core-breathing transient). Frozen here, at the handoff instant, so
+    // specific_eval_rhs() has a fixed start point to blend away from.
+    if (s_handoff_transition_n_periods > 0.0)
+    {
+        const amrex::Real lambda_start =
+            static_cast<amrex::Real>(s_pre_background.lambda(tau_pre_end));
+        const amrex::Real curvature_start = static_cast<amrex::Real>(
+            s_pre_background.curvature_term_coeff(tau_pre_end));
+        const amrex::Real lambda_main_at_tau_i =
+            static_cast<amrex::Real>(s_background.lambda(s_tau_i_at_main_start));
+        const amrex::Real curvature_main_at_tau_i =
+            static_cast<amrex::Real>(
+                s_background.curvature_term_coeff(s_tau_i_at_main_start));
+
+        // The period-setting frequency should be the one the core is
+        // settling *into*: falling back to the pre-evolution value only
+        // guards the pathological lambda_main(tau_i) <= 0 corner case.
+        const amrex::Real m_r_for_period =
+            (lambda_main_at_tau_i > 0.0)
+                ? std::sqrt(lambda_main_at_tau_i)
+                : std::sqrt(lambda_start);
+
+        s_handoff_lambda_start          = lambda_start;
+        s_handoff_curvature_start       = curvature_start;
+        s_handoff_transition_tau_start  = s_tau_i_at_main_start;
+        s_handoff_transition_dtau       = static_cast<amrex::Real>(
+            s_handoff_transition_n_periods * 2.0 * M_PI / m_r_for_period);
+
+        if (Level() == 0)
+        {
+            amrex::Print()
+                << "  [AxionStrings] handoff transition: lambda "
+                << lambda_start << " -> " << lambda_main_at_tau_i
+                << ", curvature_term_coeff " << curvature_start << " -> "
+                << curvature_main_at_tau_i << ", over d(tau) = "
+                << s_handoff_transition_dtau << " ("
+                << s_handoff_transition_n_periods
+                << " main-schedule core periods)\n";
+        }
     }
 
     // a_time keeps counting up through the transition (it never resets to

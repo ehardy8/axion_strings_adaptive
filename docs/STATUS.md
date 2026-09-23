@@ -1043,3 +1043,97 @@ expected, not a bug: `ic_mode=fourier_relaxed` starts in
 relaxation is nowhere near reaching -- already independently confirmed by
 reading the call site directly, not just inferred from this run's
 behaviour.
+
+- **Investigated and fixed (2026-09-23, with the user, following up on
+  the user's own prior-work observation: "strings are produced with
+  excited core modes that lead to strong oscillations in the spectrum
+  close to mr and obscure the physics"): the pre-evolution -> main handoff
+  excites a real, measured core-breathing transient, traced to a
+  discontinuous jump in `lambda`/`curvature_term_coeff` at the switch --
+  now smoothed by default.**
+
+Direct simulation (a small, fast physical-string probe, `N=256`, single
+level, `fourier_relaxed` IC, fine output cadence spanning the handoff)
+found two independent, converging signatures right after
+`apply_pre_evolution_to_main_rescale()`: (1) `rho_radial_kin_unscreened`
+and `rho_radial_mass_unscreened` in `network_scalars.dat` rise and fall
+out of phase with each other (kinetic peaking at `tau=2.93`, mass peaking
+later at `tau=3.49`) -- the phase lag of an underdamped oscillator
+exchanging kinetic/potential energy, not a monotonically-relaxing
+profile; (2) `axion_spectrum.dat`'s unscreened spectrum shows a bump that
+starts near mode index `p~16` and migrates down towards `p~7-9` over the
+probed window, still not settled. Both survive masking (the *screened*
+columns show the same shape, just damped in amplitude).
+
+**Root cause**: for a physical run (`c0=0`), `Background::lambda(tau)=1`
+identically (constant comoving core mass), but `PreEvolutionBackground::
+lambda(tau_pre)=gamma_pre^2/R_pre(tau_pre)^2` *decreases* through
+relaxation -- using this probe's own numbers (`gamma_pre=16`, auto-
+derived; `R_pre(tau_pre_end)=4.158`), the comoving core mass jumps from
+`3.85` just before handoff to `1.0` just after: a discontinuous ~4x
+change in the string core's natural width, landing at the exact instant
+`apply_pre_evolution_to_main_rescale()` runs. That rescale is an exact
+kinematic identity for `psi`/`Pi` (the `psi=R phi` chain rule) but has no
+mechanism to fix up `lambda` itself, which is what actually sets the
+core's static profile -- a core equilibrated for the pre-evolution mass
+rings when suddenly sitting in a background that wants a different one.
+`curvature_term_coeff` jumps too, for an unrelated reason (pre-evolution's
+own schedule has it constant at `1.0`; the main schedule's own formula,
+`(1-b_inv)/(b_inv^2 tau^2)`, is identically `0` for `a_inv=2`).
+
+**Fix**: `axion_strings.pre_evolution.handoff_transition_n_periods`, read
+in `AxionStringsParams::read_handoff_transition_n_periods()`, freezes
+`lambda`/`curvature_term_coeff` at their pre-evolution values the instant
+of handoff (`apply_pre_evolution_to_main_rescale()`) and blends them to
+the main schedule's own values via a smoothstep (`3t^2-2t^3` -- value-
+continuous and zero-slope at both ends, so the smoothing itself adds no
+new kick) in `specific_eval_rhs()`'s main branch, over this many main-
+schedule core-oscillation periods (`2*pi/sqrt(lambda_main(tau_i))` -- a
+physical, resolution-independent timescale, not a bare `tau` window).
+
+**Verified** (same seed, bit-identical relaxation trajectory up to
+handoff in every comparison, since nothing before the handoff changed):
+at `n=3`, `rho_radial_mass` peak dropped from `0.093` to `0.016` (~6x),
+the spectrum bump peak from `1.08e14` to `3.27e13` (~3.3x), and the
+`xi(tau)` trajectory changed from a spurious overshoot (`0.98 -> 1.43`)
+to a smooth monotonic decline (`0.98 -> 0.79`) -- `xi`'s overshoot was
+never separately targeted, so its disappearance is independent evidence
+the mechanism, not just its two originally-flagged symptoms, was
+correctly diagnosed. Doubling the window to `n=6` gave **no further
+improvement** (rad_mass/rad_kin differ from `n=3` by <0.2% throughout the
+probed window) -- `n=3` already captures essentially all of the benefit
+smoothing alone can buy; the residual that's left (still decaying, not
+zero) is most likely genuine pre-existing formation/annihilation
+radiation baked into the field before handoff even happens, not a
+handoff-smoothness artifact, and would need a different lever (more
+relaxation time before handoff, or just trusting diagnostics only after
+some settling margin post-handoff) if it needs reducing further. A
+follow-up test of that different lever -- doubling `gamma_pre` to buy
+more relaxation time -- was tried and made things **worse**, not better:
+`gamma_pre` also directly inflates the size of the jump being smoothed
+(`lambda_start` rose from `14.8` to `24.1` despite the longer relaxation),
+so `rad_kin` peak rose ~39% even with `n=3` on top; this is a confounded
+knob (changes both the mismatch size and the relaxation time at once)
+and was reverted -- **the default `gamma_pre` (auto-derived, unset in
+every example file) is kept**.
+
+**Decision**: `handoff_transition_n_periods` now **defaults to `3.0`**
+(previously would have defaulted to `0`, i.e. opt-in) -- every
+`fourier_relaxed` config that doesn't set this explicitly gets the
+smoothed handoff automatically; set to `0` to recover the old
+instantaneous-jump behaviour. `AxionStrings/params_cluster_512base_
+2level.txt` and `docs/cluster_guide/cluster_getting_started.tex`/`.pdf`
+updated to document the new default (Section~5.3 "The handoff from
+relaxation to the main run" in the guide). 54/54 unit tests passing
+throughout (pure `AxionStringsLevel.cpp`/`AxionStringsParams.hpp` logic,
+not exercised by the standalone doctest suite).
+
+**Not yet pursued, considered and set aside for now**: an alternative
+design that avoids the ξ-based stopping criterion entirely (stop
+relaxation at the analytically-solved `tau_pre_end` where `lambda_pre`
+exactly crosses `lambda_main(tau_i)`, a closed form needing no empirical
+fit, making `lambda` exactly continuous by construction rather than
+smoothed after the fact) was discussed with the user but not implemented
+-- the smoothstep fix above was judged sufficient once verified. Revisit
+if a future config needs `xi` at handoff decoupled from what the smoothed-
+jump default happens to produce.

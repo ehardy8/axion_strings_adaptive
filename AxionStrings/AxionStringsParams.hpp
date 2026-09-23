@@ -160,6 +160,39 @@ inline double read_xi_target()
     return xi_target;
 }
 
+// Handoff smoothing (2026-09-23, with the user): apply_pre_evolution_to_
+// main_rescale()'s R-rescale matches psi/Pi exactly across the pre-
+// evolution -> main handoff, but lambda and curvature_term_coeff
+// themselves still jump discontinuously between the pre-evolution and
+// main schedules (they generically sit on different (a_inv,c) curves) --
+// confirmed by direct simulation to excite a measurable core-breathing
+// transient (oscillatory rho_radial_kin/mass in network_scalars.dat, a
+// bump in axion_spectrum.dat that migrates from the old core scale
+// towards the new one over several tau) that the usual masking scheme
+// does not remove. On by default (3 periods) as of 2026-09-23: tested at
+// n=3 and n=6 with no further improvement from the longer window (n=3
+// already captures essentially all of the benefit smoothing alone can
+// buy -- docs/STATUS.md has the full comparison), so 3 is kept as the
+// standing default rather than left opt-in; every fourier_relaxed config
+// that doesn't set this explicitly now gets the smoothed handoff. Set to
+// 0 to recover the old instantaneous-jump behaviour. When > 0,
+// AxionStringsLevel blends lambda/curvature_term_coeff from their frozen
+// pre-evolution values at the handoff to the main schedule's own values
+// via a smoothstep, over this many main-schedule core-oscillation periods
+// (2*pi/sqrt(lambda_main(tau_i)) -- a physical, resolution-independent
+// timescale, not a bare tau window).
+inline double read_handoff_transition_n_periods()
+{
+    GRParmParse pp("axion_strings.pre_evolution");
+    double n_periods = 3.0;
+    pp.queryAdd("handoff_transition_n_periods", n_periods);
+    if (n_periods < 0.0)
+    {
+        pp.error("handoff_transition_n_periods", "must be >= 0");
+    }
+    return n_periods;
+}
+
 struct FourierICParams
 {
     double k_max_over_mr{};

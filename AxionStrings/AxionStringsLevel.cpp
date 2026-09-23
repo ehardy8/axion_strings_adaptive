@@ -1639,12 +1639,27 @@ void AxionStringsLevel::specific_post_timestep()
                 "real_space_mean_sq_unscreened", "parseval_full_screened",
                 "parseval_full_unscreened", "parseval_inscribed_screened",
                 "parseval_inscribed_unscreened"};
-            const std::vector<std::string> spectrum_pre_header{"tau",
-                                                               "mode_index"};
+            const std::vector<std::string> spectrum_pre_header{
+                "tau", "mode_index", "k_over_H"};
             axion_spectrum_file.write_header_line(spectrum_header,
                                                   spectrum_pre_header);
         }
         axion_spectrum_file.remove_duplicate_time_data();
+        // k_over_H (2026-09-24, with the user): the physical-unit x-axis a
+        // spectral index q is actually fit against (conventions.md sec.10/
+        // sec.12's own "(2*pi/(L H))" conversion factor from the raw mode
+        // index, docs/STATUS.md's task 1.9 entry flagged this rescaling as
+        // not yet wired up -- this is it, computed once here rather than
+        // making every downstream analysis redo it from L_tilde/H by hand.
+        // Background::H(tau) is valid identically across any c-switch (its
+        // own doc comment), and this whole spectrum block only ever runs
+        // in Phase::Evolving (Phase::Relaxing returns earlier in this
+        // function), so s_background/tau are the correct pair here, not
+        // s_pre_background/a_time.
+        const double h_at_tau         = s_background.H(tau);
+        const double k_over_h_per_mode = (h_at_tau > 0.0)
+                                             ? 2.0 * M_PI / (L_tilde * h_at_tau)
+                                             : 0.0;
         // Both spectra share the same domain/binning, so their
         // shell_average vectors are always the same length.
         for (std::size_t mode_index = 0;
@@ -1652,7 +1667,9 @@ void AxionStringsLevel::specific_post_timestep()
             ++mode_index)
         {
             const std::vector<amrex::Real> coords{
-                tau, static_cast<amrex::Real>(mode_index)};
+                tau, static_cast<amrex::Real>(mode_index),
+                static_cast<amrex::Real>(
+                    k_over_h_per_mode * static_cast<double>(mode_index))};
             const std::vector<amrex::Real> row{
                 static_cast<amrex::Real>(
                     spectrum_screened.shell_average[mode_index]),

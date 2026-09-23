@@ -154,7 +154,10 @@ _NETWORK_COLUMNS = [
 ]
 
 _SPECTRUM_COLUMNS = [
-    "tau", "mode_index",
+    # k_over_H added 2026-09-24 (AxionStringsLevel.cpp) -- the raw
+    # (2*pi*mode_index)/(L_tilde*H(tau)) conversion this module's own
+    # k_over_H() used to have to redo by hand from L_tilde/Background(tau).
+    "tau", "mode_index", "k_over_H",
     "shell_average_screened", "shell_average_unscreened",
     "full_cube_energy_screened", "full_cube_energy_unscreened",
     "inscribed_sphere_energy_screened", "inscribed_sphere_energy_unscreened",

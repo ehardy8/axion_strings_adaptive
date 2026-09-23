@@ -844,28 +844,54 @@ inline void apply_box_plan(const Background &background, double tau_i)
                 << plan.log_add[static_cast<std::size_t>(ell - 1)] << "\n";
         }
 
-        if (ic_mode == "fourier_relaxed")
+        if (ic_mode == "fourier_relaxed" &&
+            !GRParmParse("axion_strings.pre_evolution").contains("gamma"))
         {
             // apply_pre_evolution_gamma_default's whole premise (only the
             // coarsest level exists when the main run starts) requires
             // log_mr_over_h_i to sit below level 1's own threshold --
-            // checked here rather than just assumed, so a violation is a
-            // clear startup error instead of a silently under-resolved
-            // relaxed field (2026-09-22, with the user).
+            // checked here rather than just assumed. Only when gamma is
+            // left to the default, though (2026-09-24, fixing a real bug
+            // the user hit): this premise simply does not apply once the
+            // user has set axion_strings.pre_evolution.gamma explicitly --
+            // that IS "the resolution you actually want to relax at" the
+            // warning below itself suggests as the fix, and an earlier
+            // version of this check fired unconditionally regardless, so
+            // following that exact suggested fix could not actually avoid
+            // it.
+            //
+            // Warning, not error (2026-09-24, with the user -- relaxing
+            // this from the abort it used to be): proceeding with the
+            // same default (1/dx_base, "assume no refinement yet") is a
+            // legitimate deliberate choice here too, same as an explicit-
+            // but-mismatched gamma already only warns about just below --
+            // the field ends up relaxed at the coarsest level's
+            // resolution even though a finer level is already active at
+            // tau_i, which is not necessarily wrong (relaxation itself
+            // never refines, regardless -- StringTagger.hpp's tag_cells()
+            // is a no-op during Phase::Relaxing -- so the relaxed field
+            // was always going to be coarsest-level-resolution; the only
+            // question is whether that resolution is now coarser, at
+            // tau_i, than what log_mr_over_h_i has already committed the
+            // main run to needing).
             const double log_mr_over_h_i =
                 -std::log(background.H_over_mr_direct(tau_i));
             if (log_mr_over_h_i >= plan.log_add[0])
             {
-                pp.error(
-                    "log_mr_over_h_i",
-                    "is already at or past the level-1 threshold printed "
-                    "above -- the main run would start with level 1 "
-                    "already active, but axion_strings.pre_evolution."
-                    "gamma's default (1/dx_base) assumes only the coarsest "
-                    "level is present at tau_i. Lower log_mr_over_h_i "
-                    "below the level-1 threshold, or set "
-                    "axion_strings.pre_evolution.gamma explicitly at the "
-                    "resolution you actually want to relax at");
+                amrex::Print()
+                    << "  WARNING: axion_strings.log_mr_over_h_i = "
+                    << log_mr_over_h_i
+                    << " is already at or past the level-1 threshold "
+                       "printed above -- the main run will start with "
+                       "level 1 already active, but axion_strings.pre_"
+                       "evolution.gamma was left unset, so it defaults to "
+                       "1/dx_base, assuming only the coarsest level is "
+                       "present at tau_i. Proceeding with that default "
+                       "anyway (relaxing at the coarsest level's "
+                       "resolution regardless of levels already active at "
+                       "tau_i) -- set axion_strings.pre_evolution.gamma "
+                       "explicitly to relax at a different resolution "
+                       "instead.\n";
             }
         }
         apply_pre_evolution_gamma_default(ic_mode, plan.dx_base);

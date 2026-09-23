@@ -1382,6 +1382,20 @@ void AxionStringsLevel::specific_post_timestep()
         return std::to_string(pct) + "%";
     }();
 
+    // A separate, deliberately loud banner (2026-09-24, with the user,
+    // asked for something a quick scan/grep of a long run.log picks out
+    // immediately, unlike the more detailed line below): tau/tau_f as a
+    // bare ratio, not a percentage, so it reads directly against the
+    // box-plan printout's own tau_f. Same cadence as everything else in
+    // this function (this whole block only runs when the output cadence
+    // is due), not a new, independent one.
+    if (s_has_tau_f)
+    {
+        const double tau_over_tau_f = tau / s_tau_f;
+        amrex::Print() << "  ************ tau/tau_f = " << tau_over_tau_f
+                       << " ************\n";
+    }
+
     amrex::Print() << "  [AxionStrings] tau = " << tau
                    << "  (" << pct_conformal_time_str
                    << " of conformal time elapsed)"

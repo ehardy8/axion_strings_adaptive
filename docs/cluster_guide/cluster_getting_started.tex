@@ -579,11 +579,24 @@ cp "$CODE_DIR/AxionStrings3d.gnu.FLOAT.MPI.OMP.ex" "$CODE_DIR/params.txt" "$RUN_
 cd "$RUN_DIR"
 cp "$0" slurm.sh   # keep a copy of the exact script that produced this run
 
-mpirun -np 8 ./AxionStrings3d.gnu.FLOAT.MPI.OMP.ex params.txt \
+mpirun -np 8 --bind-to none ./AxionStrings3d.gnu.FLOAT.MPI.OMP.ex params.txt \
     axion_strings.pre_evolution.seed=${SLURM_ARRAY_TASK_ID} \
-    --bind-to none \
     > run.log 2>&1
 \end{lstlisting}
+
+\begin{warn}
+\texttt{--bind-to none} (and any other \texttt{mpirun}/\texttt{srun} launcher flag) must come
+\emph{before} the executable name, as above. Put it after (e.g.\ after \texttt{params.txt} or the
+parameter overrides) and \texttt{mpirun} no longer treats it as its own flag --- it forwards it straight
+through as a program argument instead. \texttt{ParmParse} then silently swallows any such stray,
+non-\texttt{key=value} tokens as \emph{additional values} appended onto whichever \texttt{key=value}
+override immediately preceded them on the command line, corrupting it into a multi-element array (a
+real incident: \texttt{axion\_strings.pre\_evolution.seed=1 --bind-to none} produced
+\texttt{seed(nvals=4) :: [1, --bind-to, none, ...]}, and desynchronised argument parsing further down
+the line meant \texttt{params.txt} itself was never read as the inputs file at all, aborting with
+\texttt{axion\_strings.a\_inv not found in database} despite that parameter being right there in the
+file).
+\end{warn}
 
 A few things worth calling out explicitly:
 \begin{itemize}
@@ -594,6 +607,8 @@ A few things worth calling out explicitly:
   \item Parameters after the parameter-file name on the \texttt{mpirun} line
         (\texttt{axion\_strings.pre\_evolution.seed=\dots}) \emph{override} whatever's in \texttt{params.txt}
         --- handy for exactly this kind of per-job tweak without needing four separate parameter files.
+        Keep any \texttt{mpirun}/\texttt{srun} launcher flags (like \texttt{--bind-to none} below) before
+        the executable, never after --- see the warning above.
   \item \textbf{\texttt{--bind-to none}} matters more here than it would without threads: it stops Open MPI
         pinning each rank to a single CPU, which would otherwise trap that rank's 4 threads fighting over
         one core instead of spreading across the 4 \texttt{--cpus-per-task} reserved for it.

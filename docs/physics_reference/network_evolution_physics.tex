@@ -1,0 +1,403 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Helvetica Neue}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+
+\definecolor{codebg}{RGB}{244,244,247}
+\definecolor{codeframe}{RGB}{210,210,216}
+\definecolor{accent}{RGB}{31,74,121}
+\definecolor{notebg}{RGB}{237,242,247}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framesep=6pt,
+  xleftmargin=2pt,
+  xrightmargin=2pt,
+  columns=fullflexible,
+  keepspaces=true,
+}
+
+\newtcolorbox{note}{colback=notebg,colframe=codeframe,boxrule=0.5pt,arc=2pt,left=8pt,right=8pt,top=6pt,bottom=6pt,breakable}
+
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{accent}}{\thesubsection}{0.6em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{gray} Axion Strings AMR --- Physics Reference}
+\fancyhead[R]{\small\color{gray} \thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=accent,
+  urlcolor=accent,
+  citecolor=accent,
+  pdftitle={Axion Strings AMR: Physics and Numerical Conventions},
+  pdfauthor={Axion Strings AMR project}
+}
+
+\setlist[itemize]{leftmargin=1.4em}
+\setlist[enumerate]{leftmargin=1.6em}
+
+\newcommand{\psivec}{\psi}
+\newcommand{\Rt}{\tilde{L}}
+
+\title{\vspace{-1.5cm}\textbf{\Huge Axion Strings AMR}\\[0.3cm]\Large Physics and Numerical Conventions\\[0.15cm]\normalsize Network evolution only --- see the code for loop/collision test ICs}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+\vspace{-1.0cm}
+
+\begin{note}
+\textbf{Scope.} This is a physics reference, not a how-to: it specifies what equations are solved, how the
+field is initialised and relaxed, how refinement is decided, and how every reported observable is defined
+--- the detail needed to interpret a run's output correctly, not to launch one. For parameter names,
+defaults and cluster mechanics, see the getting-started guide. Only the physical-string network pipeline is
+covered (\texttt{ic\_mode = fourier\_relaxed} into the main evolution); the flat-space loop/collision test
+ICs are a separate, simpler code path and are not described here.
+\end{note}
+
+\tableofcontents
+
+\section{Field content, units, and normalisation}
+\label{sec:units}
+
+The field is a single complex scalar $\phi$ (the Peccei--Quinn field), written as two real components. Code
+units fix
+\[
+v = 1, \qquad \lambda_0 = 1, \qquad \tau_0 = 1,
+\]
+where $v$ is the vacuum expectation value ($\langle|\phi|\rangle = v$), $\lambda_0$ the quartic coupling at
+$\tau_0$, and $\tau$ is \emph{conformal} time throughout. The field is evolved in a rescaled, comoving form
+\[
+\psivec = R(\tau)\,\phi/v, \qquad \Pi \equiv \psivec' = \mathrm{d}\psivec/\mathrm{d}\tau,
+\]
+with $\psivec = \psivec_1 + i\psivec_2$; the four state variables are $(\psivec_1,\psivec_2,\Pi_1,\Pi_2)$.
+Because $R(\tau)>0$ is real, $\arg(\psivec) = \arg(\phi)$ exactly --- the phase is unaffected by the
+comoving rescaling, which is used throughout (string finding, masking) to work directly with the stored
+state.
+
+\textbf{Normalisation.} $\phi$ is canonically normalised as a \emph{complex} scalar: the kinetic and
+gradient terms carry no extra factor of $\tfrac12$ (unlike a single real scalar). This was re-derived
+directly from the equation of motion (Section~\ref{sec:eom}) rather than assumed, after finding an error of
+this kind in an earlier document -- see \texttt{Energy.hpp}'s header for the check. The axion (phase) field
+is $a = f_a\,\theta$, $\theta=\arg(\phi)$, with
+\[
+f_a = \sqrt{2}\,v = \sqrt{2} \quad \text{in code units.}
+\]
+
+\section{Background and equations of motion}
+\label{sec:eom}
+
+\subsection{Expansion law}
+The scale factor is a pure power law in conformal time,
+\[
+R(\tau) = R_0\left(\frac{\tau}{\tau_0}\right)^{1/b_{\rm inv}}, \qquad b_{\rm inv} \equiv a_{\rm inv}-1,
+\qquad R_0 = \frac{1}{b_{\rm inv}},
+\]
+so the single input \texttt{a\_inv} fixes the whole expansion history (radiation domination is
+$a_{\rm inv}=2$). The physical Hubble rate is $H(\tau) = R'(\tau)/R(\tau)^2$, independent of everything
+below --- only $\lambda(\tau)$, not $R(\tau)$, responds to the mass schedule.
+
+\subsection{Mass schedule and the three regimes}
+\label{sec:regimes}
+\[
+\lambda(\tau) = \lambda_0\left(\frac{R(\tau)}{R_0}\right)^{-2c}, \qquad m_r(\tau) = \sqrt{\lambda(\tau)}.
+\]
+A single exponent \texttt{c0} (with an optional single switch to \texttt{c1} at a chosen $\tau_{\rm sw}$,
+$\lambda$ re-anchored there so it stays continuous, only its logarithmic slope changes) selects which of
+three physically distinct schedules is being run:
+\begin{itemize}
+  \item \textbf{Physical strings}, $c=0$: $\lambda\equiv\lambda_0$ is exactly constant, so the string's
+        comoving core width is fixed while the comoving horizon grows --- $m_r/H$ grows with $\tau$, which
+        is the actual target dynamics (real global strings), and is why $\log(m_r/H)$ is the natural
+        ``how far into the run'' coordinate used everywhere in this project.
+  \item \textbf{Fat strings}, $c=1$: $\lambda\propto R^{-2}$, chosen so that $R(\tau)\,m_r(\tau)$ is exactly
+        constant --- the comoving core width shrinks at exactly the rate the comoving horizon does, holding
+        $m_r/H$ \emph{fixed}. Cores are artificially fat/cheap to resolve; used to relax a network onto its
+        attractor fast (Section~\ref{sec:preevolution}) and, via a switch to $c=a_{\rm inv}$ mid-run, as a
+        bridge into Moore's trick.
+  \item \textbf{Moore's trick}, $c=a_{\rm inv}$: singular in the general box-planning formula below (the
+        exponent $(a_{\rm inv}-1)/(a_{\rm inv}-c)$ diverges), handled by its own formulas
+        (Section~\ref{sec:boxplan}). $H\!L$ (Hubble length over box size) falls as $1/\tau$ while resolution
+        only improves, letting a single run reach a much larger $\log(m_r/H)$ than the physical schedule
+        could afford at the same cost -- supporting evidence for the main physical-string result, not the
+        headline measurement itself.
+\end{itemize}
+
+\subsection{Equation of motion}
+The complex-scalar equation of motion actually integrated (one RHS, templated on nothing --- physical, fat
+and Moore differ \emph{only} through $\lambda(\tau)$ above, never through separate code paths) is
+\[
+\Pi_i' = \nabla^2\psivec_i + c_{\rm curv}(\tau)\,\psivec_i - \frac{\lambda(\tau)}{2}\,\psivec_i\left(|\psivec|^2 -
+R(\tau)^2\right), \qquad \psivec_i' = \Pi_i, \qquad i=1,2,
+\]
+with the Laplacian a comoving spatial derivative (fourth-order stencil) and
+\[
+c_{\rm curv}(\tau) = \frac{1-b_{\rm inv}}{b_{\rm inv}^2\,\tau^2}.
+\]
+$R(\tau)$, $\lambda(\tau)$ and $c_{\rm curv}(\tau)$ are evaluated on the host from $\tau$ and passed into
+the kernel as plain numbers -- no parameter parsing or background evaluation inside the per-cell loop, so
+the kernel is GPU-clean by construction.
+
+\textbf{No Kreiss--Oliger dissipation.} $\sigma=0$ is the standing default: KO dissipation damps precisely
+the high-$k$ modes the axion spectral index $q$ is measured from, so it is not added as a matter of course.
+A nonzero $\sigma$, if ever required for stability, must be characterised (its effect on the spectrum
+quantified) with the same care as the lattice spacing, not quietly switched on.
+
+\section{Box planning}
+\label{sec:boxplan}
+Two physical targets, both evaluated at the run's final time $\tau_f$, fix the comoving box:
+\begin{align*}
+N_1 &= H(\tau_f)\,\Rt(\tau_f) &&\text{(Hubble patches per box length)}, \\
+N_2 &= \frac{1}{\Delta(\tau_f)\,m_r(\tau_f)} &&\text{(grid points per core width)},
+\end{align*}
+with $N=N_1 N_2$ (comoving box length in finest-grid cells) the third input. For $c\neq a_{\rm inv}$,
+\[
+\tau_f = \left(\frac{N}{N_1 N_2}\right)^{\frac{a_{\rm inv}-1}{a_{\rm inv}-c}}, \qquad
+\Rt = \frac{N_1}{R_0}\left(\frac{N}{N_1 N_2}\right)^{\frac{a_{\rm inv}-1}{a_{\rm inv}-c}}.
+\]
+For AMR, $N$/$N_2$ above refer to the \emph{finest} level; the base (level-0) grid is
+$N/2^{\texttt{max\_level}}$. Each refinement level is only permitted once the current finest level's own
+resolution has genuinely degraded to the $N_2$ target -- the level-addition schedule, spaced by
+\[
+\Delta\!\log(m_r/H)\ \text{per level} = \ln 2\cdot\frac{a_{\rm inv}-c}{1-c}
+\]
+(singular at $c=1$: a fat run's comoving core width never shrinks, so no further level is ever needed once
+set up). Buffering between regrids (\texttt{amr.n\_error\_buf}) is sized so that the fastest possible
+signal ($v=1$ in these units) cannot cross out of the tagged-plus-buffer region before the next regrid
+check, given the fixed relation $\mathrm{d}t_{\rm level} = \texttt{dt\_multiplier}\times \mathrm{d}x_{\rm
+level}$.
+
+\section{Initial conditions and pre-evolution}
+\label{sec:preevolution}
+
+\subsection{Why relax at all}
+Starting the physical-string ($c=0$) schedule directly from a raw random field would spend a large part of
+the run just forming a realistic tangle, and the relaxation transient itself contaminates later
+diagnostics. Instead, an over-seeded Gaussian random field is generated and evolved under a separate,
+favourable schedule until it settles onto the network's own attractor, \emph{then} handed off into the main
+($c=0$) run.
+
+\subsection{Fourier-mode initial field}
+$\psivec_1,\psivec_2$ are drawn as an independent Gaussian random field per Fourier mode (deterministic
+per-mode hash of \texttt{(seed, component, i, j, k)}, not a stream-based RNG -- reproducible at fixed
+\texttt{(seed, parameters, rank count)}), flat over $|k|\le k_{\max}$ and zero above, with
+\[
+k_{\max}\ (\text{in cells}) = \texttt{k\_max\_over\_mr}\times m_r(0)\times \mathrm{d}x,
+\]
+then rescaled in real space to hit the requested mean-square variance exactly. $k_{\max}$ is deliberately
+\emph{not} restricted to the core scale: sub-core modes seed extra, doomed-to-annihilate vortex--antivortex
+pairs (Kibble mechanism), and since annihilation only ever removes net winding, under-seeding can never
+reach a dense target network -- $k_{\max}$ must be generous enough that the network is over-tangled at
+$\tau_{\rm pre}=0$ and has genuine room to relax down.
+
+\subsection{The pre-evolution background}
+Relaxation runs on its own clock $\tau_{\rm pre}$ (starting at 0) and its own background, \emph{not} an
+instance of Section~\ref{sec:eom}'s power law ($a_{\rm inv}=1$ is singular there). Switching to
+$\tau_{\rm pre}$ turns a linear-in-cosmic-time $R$ into
+\[
+R_{\rm pre}(\tau_{\rm pre}) = e^{\tau_{\rm pre}}, \qquad
+\lambda_{\rm pre}(\tau_{\rm pre}) = \frac{\gamma_{\rm pre}^2}{R_{\rm pre}(\tau_{\rm pre})^2}, \qquad
+c_{\rm curv}^{\rm pre} = 1\ \text{(constant)},
+\]
+($R_0=\alpha=1$ WLOG, one physical input $\gamma_{\rm pre}$ remaining). This is exactly the fat-mode
+$\lambda\propto R^{-2}$ shape (Section~\ref{sec:regimes}) under this new time gauge, so it reuses the same
+RHS unchanged, and by construction holds
+\[
+\frac{m_r}{H}\bigg|_{\rm pre} = \gamma_{\rm pre} \quad \text{exactly constant throughout relaxation},
+\]
+letting the network converge onto a genuine attractor fast rather than chasing a moving target. Unless set
+explicitly, $\gamma_{\rm pre} = 1/\mathrm{d}x_{\rm base}$ (resolves the core with $\sim\!1$ cell at
+$\tau_{\rm pre}=0$) -- purely a starting-resolution choice; because $\lambda_{\rm pre}$ keeps decreasing
+through relaxation, the comoving core width \emph{grows} over the course of relaxation, away from that
+starting point.
+
+\subsection{Stopping condition}
+Relaxation stops the first time the measured $\xi$ (Section~\ref{sec:xi}, on the relaxation's own grid, at
+an adaptive check cadence that tightens as $\xi$ approaches target) drops to \texttt{xi\_target}. $\xi$
+generally decreases monotonically as the over-seeded network anneals.
+
+\subsection{Handoff to the main run}
+At the stopping instant $\tau_{\rm pre,end}$, the field is rescaled into the main run's own normalisation.
+Writing $\phi=\psivec/R$ in either frame and requiring $\phi$ itself to be continuous across the switch
+gives, with $\kappa \equiv R_{\rm main}(\tau_i)/R_{\rm pre}(\tau_{\rm pre,end})$,
+\[
+\psivec_i \to \kappa\,\psivec_i, \qquad
+\Pi_i \to \kappa^2\,\Pi_i + \frac{\psivec_i}{R_{\rm pre}}\Big(R_{\rm main}'(\tau_i) - \kappa^2
+R_{\rm pre}'(\tau_{\rm pre,end})\Big),
+\]
+an exact chain-rule identity (not an approximation): it matches $\psivec$ and $\mathrm{d}\psivec/\mathrm{d}\tau$
+under the new background with no assumption beyond $\phi$'s own continuity. The main run's own clock then
+begins at $\tau_i$ (\texttt{log\_mr\_over\_h\_i}), continuing from the same integrator state -- no restart
+or checkpoint round-trip.
+
+\subsection{Handoff smoothing}
+\label{sec:handoffsmoothing}
+The rescale above is exact for $\psivec,\Pi$, but $\lambda$ and $c_{\rm curv}$ themselves still jump
+discontinuously at the handoff (the pre-evolution and main schedules are, in general, different curves in
+$\lambda(\tau)$ that need not agree at whatever instant relaxation happens to stop). A discontinuous jump in
+$\lambda$ is a discontinuous jump in the string core's natural width, and leaving the field's already-formed
+spatial profile as-is while its equation of motion suddenly wants a different equilibrium width excites a
+measurable transient: an oscillatory exchange between radial kinetic and potential energy, and a bump in
+the axion spectrum near the old core scale that migrates towards the new one over several $\tau$. By
+default (\texttt{handoff\_transition\_n\_periods = 3}), $\lambda$ and $c_{\rm curv}$ are instead blended
+from their frozen pre-evolution values to the main schedule's own values via a smoothstep
+($3t^2-2t^3$, value-continuous with zero slope at both ends, so the smoothing itself adds no new
+discontinuity) over this many main-schedule core-oscillation periods, $2\pi/\sqrt{\lambda_{\rm
+main}(\tau_i)}$. Set to $0$ to recover the instantaneous jump.
+
+\section{Tagging and AMR refinement}
+\label{sec:tagging}
+The primary refinement criterion is exact and parameter-free: a cell is tagged if any of its three
+low-index-corner plaquettes ($xy$, $yz$, $zx$) is pierced, i.e.\ the phase $\theta=\arg(\psivec)$ winds by a
+full $\pm 2\pi$ around the plaquette's four corners (each consecutive step wrapped into $(-\pi,\pi]$ before
+summing). This is the \emph{same} routine the $\xi$ diagnostic uses to count strings
+(Section~\ref{sec:xi}) -- one implementation, not two copies that could silently drift apart. A level may
+only be created once $\log(m_r/H)$ has actually crossed its own threshold (Section~\ref{sec:boxplan}); no
+refinement happens during relaxation at all (relaxation's own clock is not $\log(m_r/H)$ in the main
+schedule's sense, and holding $m_r/H$ fixed throughout relaxation means no new level is ever due there
+regardless).
+
+Two further, optional per-cell triggers exist -- a Laplacian threshold on $\psivec_1,\psivec_2$
+(\texttt{gradient\_threshold}) and a radial-amplitude-gradient threshold
+(\texttt{radial\_\allowbreak gradient\_\allowbreak threshold}) -- both \emph{off by default}: calibrating
+either against an isolated static core was tried and found to flag essentially the whole domain once
+applied to a real, dense network's field statistics, not just cores, so neither is trusted as a default.
+
+\textbf{Refinement-systematics control.} \texttt{force\_full\_refinement} (off by default) bypasses both
+the criteria above and the schedule-gating, tagging every cell at every level unconditionally -- not a
+production setting, but a way to run an otherwise-identical pair of simulations, one adaptively refined and
+one uniformly refined to the same finest resolution, to check directly whether refinement itself is biasing
+any observable.
+
+\section{Masking (screening)}
+\label{sec:masking}
+The axion phase rate $\theta' = (\psivec_1\Pi_2-\Pi_1\psivec_2)/|\psivec|^2$ genuinely diverges near a string
+core ($|\psivec|\to0$), so any spectrum or energy built from it must exclude the core region before
+transforming or summing -- applied at exactly one place (filling the buffer handed to the FFT/reduction),
+not inlined at several call sites, so an index or threshold error cannot silently diverge between them.
+Three schemes:
+\begin{itemize}
+  \item \textbf{None} ($f=1$): unscreened pass, required for every screened/unscreened energy or spectrum
+        pair (Sections~\ref{sec:energies},~\ref{sec:spectrum}) and for the tension's core+tail term.
+  \item \textbf{A}: the bare numerator $\psivec_1\Pi_2-\Pi_1\psivec_2$, no division, no top-hat.
+  \item \textbf{B}: the genuine phase rate $\theta'$ above, top-hat zeroed wherever $|\psivec|/R$ is below a
+        runtime \texttt{threshold} (default $0.8$, not a settled choice -- $0.9$, $0.95$ have also been
+        tried without reconciling on one value). The same $0/1$ top-hat is also the weight used to correct
+        the effective point count in any spatial average over masked data (e.g.\ $n_{\rm unmasked}$ below).
+\end{itemize}
+
+\section{Observables}
+\label{sec:observables}
+
+\subsection{String density \texorpdfstring{$\xi$}{xi}}
+\label{sec:xi}
+Each pierced plaquette represents $\sim\!\tfrac23\,\mathrm{d}x$ of string length (a \emph{statistical}
+correction for random orientation relative to the lattice -- exact for a network of many randomly-oriented
+strings, not for a single deterministically axis-aligned one). Summing across AMR levels by comoving length
+(never by raw cell/plaquette count, which would overweight finer levels),
+\[
+\ell_{\rm comoving} = \frac{2}{3}\sum_\ell N_{p,\ell}\,\mathrm{d}x_\ell, \qquad
+\xi = \frac{\ell_{\rm comoving}}{\Rt^3}\cdot\frac{(a_{\rm inv}-1)^3}{a_{\rm inv}^2}\cdot\tau^2.
+\]
+$N_p$ (``plain'') counts pierced plaquettes; $N_{p,\rm weighted}$ sums $|{\rm winding}|$ over them -- most
+strings are singly wound, so the two agree closely, and a divergence between them is itself a diagnostic.
+
+\subsection{Energies}
+\label{sec:energies}
+The regular (non-singular) total physical energy density, from the canonically normalised $\phi$
+Lagrangian directly (not the polar axion+radial decomposition below, which is individually singular at the
+core):
+\[
+\rho_{\rm tot} = \frac{1}{R^4}\Big[\,|\Pi - (R'/R)\psivec|^2 + |\nabla\psivec|^2 +
+\tfrac14\lambda\big(|\psivec|^2-R^2\big)^2\,\Big].
+\]
+The phase (axion) and amplitude (radial/Higgs) modes are also reported individually, each the genuine
+energy carried by that one degree of freedom alone (not ``total minus the other''):
+\[
+\rho_a^{\rm kin} = \tfrac12\dot a^2,\qquad \rho_a^{\rm grad} = \tfrac12(\nabla a)^2, \qquad a = f_a\theta,
+\]
+with $\dot a = f_a\theta'/R$ (cosmic time from conformal) and $\nabla a$ picking up one power of $1/R$
+(physical), not two (a pure phase has no amplitude to redshift). The radial energies use the exact
+orthogonal decomposition of $|\dot\phi|^2$/$|\nabla\phi|^2$ into radial and tangential parts (a Pythagorean
+identity, not an approximation): $r\equiv|\phi|-v$,
+\[
+\rho_r^{\rm kin} = \dot r^2, \qquad \rho_r^{\rm grad} = (\nabla r)^2, \qquad
+\rho_r^{\rm mass} = \tfrac14\lambda\big(|\phi|^2-v^2\big)^2.
+\]
+Every energy is reported both screened and unscreened (Section~\ref{sec:masking}).
+
+\subsection{String tension}
+\label{sec:tension}
+Two variants, both normalised by $\ell_{\rm comoving}$ above, from the composite (all-level) coverage sums
+$n_{\rm total}$/$n_{\rm unmasked}$ (comoving \emph{volumes} once levels are combined, not raw counts):
+\[
+\mu_{\rm core} = \frac{R^2\big[n_{\rm total}\,\rho_{\rm tot}^{\rm unscr} - n_{\rm unmasked}\,\rho_{\rm
+tot}^{\rm scr}\big]}{\ell_{\rm comoving}}, \qquad
+\mu_{\rm core+tail} = \mu_{\rm core} + \frac{R^2\,n_{\rm unmasked}\big[\rho_{a,\rm scr}^{\rm grad} -
+\rho_{a,\rm scr}^{\rm kin}\big]}{\ell_{\rm comoving}}.
+\]
+$\mu_{\rm core}$ is expected to converge to a resolution-independent \emph{constant}, but has no simple
+closed form: it depends on both the near-core profile (not universal) and the masking threshold's exact
+radius. $\mu_{\rm core+tail}$ is expected to \emph{diverge logarithmically} with the box/horizon size --
+the long-range Goldstone tail is universal, and its coefficient is calculable directly from the axion
+gradient energy density above: at large $\rho$ from an isolated winding-1 core, $|\nabla\theta|^2=1/\rho^2$,
+so
+\[
+\rho_a^{\rm grad}(\rho) = \tfrac12 f_a^2/\rho^2 = 1/\rho^2 \ \ (v=1) \quad\Longrightarrow\quad
+\mu_{\rm tail} = 2\pi\!\int_{1/m_r}^{L}\!\rho\,\frac{\mathrm{d}\rho}{\rho^2} = 2\pi\ln(m_r L).
+\]
+Taking $L\sim1/H$ (the natural IR cutoff for a single string in an expanding background) gives the
+closed-form prediction
+\[
+\mu_{\rm core+tail} \approx 2\pi\,\ln(m_r/H)
+\]
+directly in terms of the reported $m_r/H$ column. This is the \emph{isolated single-string} estimate; a
+real network's nearby strings partially screen each other's long-range tail, so a measured value somewhat
+below this is expected, not a discrepancy.
+
+\subsection{Spectrum}
+\label{sec:spectrum}
+The masked $a_{\rm dot}=f_a\theta'/R$ field (Section~\ref{sec:masking}) is Fourier-transformed
+(\texttt{amrex::FFT::R2C}, level-0 only -- established policy, not yet extended across the hierarchy) and
+binned into shells by integer mode number $p=\lfloor|\mathbf{p}|+0.5\rfloor$, dropping modes outside the
+inscribed sphere ($p\ge N/2$). Reported alongside the bare shell average and mode index is the physical
+$k/H$ for that mode,
+\[
+k/H = \frac{2\pi\,p}{\Rt\,H(\tau)},
+\]
+the $x$-axis a spectral index $q$ is actually fit against. Screened and unscreened spectra are both saved,
+from two independent FFT passes (scheme B and None), so the impact of screening itself is directly
+visible.
+
+\subsection{String velocities}
+\label{sec:velocity}
+Evaluated at the corners of every pierced plaquette (global-string equilibrium profile coefficients
+$c_1=0.41222$, $e_1=-0.025763$), R-independent by construction (a physical velocity cannot depend on the
+comoving rescaling used to evolve the field -- verified as an exact algebraic cancellation, not assumed):
+\[
+\gamma^2v^2 = \frac{|\dot\phi|^2}{2m_r^2c_1^2}\left(1-\frac{e_1|\phi|^2}{c_1^3}\right) -
+\frac{e_1\,[\mathrm{Re}(\phi^*\dot\phi)]^2}{4m_r^2c_1^5}.
+\]
+
+\end{document}

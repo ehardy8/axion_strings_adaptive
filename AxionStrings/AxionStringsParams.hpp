@@ -11,6 +11,7 @@
 
 #include "Background.hpp"
 #include "BoxPlan.hpp"
+#include "CurvatureKernel.hpp"
 #include "GRParmParse.hpp"
 #include "Masking.hpp"
 #include "PreEvolutionBackground.hpp"
@@ -526,6 +527,66 @@ inline MaskingParams read_masking_params(const std::string &prefix)
         (params.threshold <= 0.0 || params.threshold >= 1.0))
     {
         pp.error("threshold", "must be in (0, 1) for scheme B");
+    }
+
+    return params;
+}
+
+// Local string curvature (2026-09-26, with the user, CurvatureKernel.hpp):
+// a distribution of curvatures along the network, binned by the
+// dimensionless kappa/m_r (curvature relative to the string's own core
+// scale). Off by default (axion_strings.compute_curvature), same "opt-in,
+// real extra cost" convention as compute_spectrum. The bin range is a
+// runtime parameter, never hardcoded (CLAUDE.md constraint 4's spirit,
+// same reasoning as the masking threshold) -- kappa/m_r > 1 corresponds
+// to a radius of curvature tighter than the core width itself, not
+// physically meaningful for a string of finite width, so the default
+// upper edge is set just past that; the lower edge is a practical floor
+// below which curvature is indistinguishable from lattice-scale noise on
+// an already-straight segment.
+inline CurvatureParams read_curvature_params()
+{
+    GRParmParse pp("axion_strings.curvature");
+    CurvatureParams params{};
+    pp.queryAdd("n_bins", params.n_bins);
+    pp.queryAdd("log10_kappa_over_mr_min", params.log10_kappa_over_mr_min);
+    pp.queryAdd("log10_kappa_over_mr_max", params.log10_kappa_over_mr_max);
+    if (params.n_bins <= 0)
+    {
+        pp.error("n_bins", "must be > 0");
+    }
+    if (params.log10_kappa_over_mr_max <= params.log10_kappa_over_mr_min)
+    {
+        pp.error("log10_kappa_over_mr_max",
+                "must be > log10_kappa_over_mr_min");
+    }
+
+    // Two independent ways to build "the position/direction of the
+    // string" for the curvature measurement (CurvatureKernel.hpp's own
+    // header comment has the full story) -- kept switchable rather than
+    // picking one, so they can be cross-checked against each other.
+    // Defaults to tangent_vector: the one validated first (a live network
+    // test's histogram went from 0/720 bins ever populated to a smooth,
+    // stable unimodal distribution across 30 snapshots, 2026-09-27).
+    std::string method = "tangent_vector";
+    pp.queryAdd("method", method);
+    if (method == "tangent_vector")
+    {
+        params.method = CurvatureMethod::TangentVector;
+    }
+    else if (method == "interpolated_position")
+    {
+        params.method = CurvatureMethod::InterpolatedPosition;
+    }
+    else if (method == "hessian_analytic")
+    {
+        params.method = CurvatureMethod::HessianAnalytic;
+    }
+    else
+    {
+        pp.error("method", "must be \"tangent_vector\", "
+                           "\"interpolated_position\" or "
+                           "\"hessian_analytic\"");
     }
 
     return params;

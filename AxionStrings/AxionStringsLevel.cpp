@@ -1,6 +1,8 @@
 #include "AxionStringsLevel.hpp"
 #include "AxionStringsParams.hpp"
 #include "AxionStringsRHS.hpp"
+#include "CurvatureChainDebug.hpp"
+#include "CurvatureKernel.hpp"
 #include "EnergyKernel.hpp"
 #include "FourierIC.hpp"
 #include "MaskedFieldBuffer.hpp"
@@ -1689,6 +1691,104 @@ void AxionStringsLevel::specific_post_timestep()
                 static_cast<amrex::Real>(parseval_inscribed_screened),
                 static_cast<amrex::Real>(parseval_inscribed_unscreened)};
             axion_spectrum_file.write_data_line(row, coords);
+        }
+    }
+
+    // Local string curvature (2026-09-26/27, with the user,
+    // CurvatureKernel.hpp): opt-in (axion_strings.compute_curvature), same
+    // "real extra cost, off by default" convention as compute_spectrum.
+    // Composite across the whole AMR hierarchy (Stage 2, 2026-09-27, the
+    // plan agreed when this diagnostic was first designed) -- its own
+    // separate gather_composite_levels call, not the shared `levels`
+    // above (only 2 ghost cells there; curvature's connectivity walk
+    // needs 3, see CurvatureKernel.hpp's own ghost-cell requirement).
+    // Each level's own state is used directly at that level's own
+    // resolution, not averaged down to level 0's (unlike the spectrum's
+    // collapse_to_level0), since averaging down would throw away exactly
+    // the fine-scale bends this diagnostic exists to measure -- the
+    // coverage mask instead ensures each physical face is only measured
+    // once, at whichever level actually covers it.
+    bool compute_curvature_flag = false;
+    amrex::ParmParse("axion_strings")
+        .queryAdd("compute_curvature", compute_curvature_flag);
+    if (compute_curvature_flag)
+    {
+        const CurvatureParams curvature_params =
+            AxionStringsParams::read_curvature_params();
+
+        const std::vector<CompositeLevelData> curvature_levels =
+            gather_composite_levels(*parent, state_index, a_time_now, 3);
+        CurvatureHistogram curvature{};
+        for (std::size_t l = 0; l < curvature_levels.size(); ++l)
+        {
+            const CompositeLevelData &lvl = curvature_levels[l];
+            const amrex::iMultiFab *mask_ptr =
+                lvl.has_mask ? &lvl.mask : nullptr;
+            const amrex::Geometry &lvl_geom =
+                parent->getLevel(static_cast<int>(l)).Geom();
+            const CurvatureHistogram part = compute_curvature_histogram(
+                lvl.state, lvl_geom, m_r_now, curvature_params, mask_ptr);
+            merge_curvature_histogram(curvature, part);
+        }
+
+        // One-off visual spot check (2026-09-27, with the user), not a
+        // routine diagnostic: off by default, and not gated on
+        // first-step-only, so set evolution.max_steps small when using
+        // this. See CurvatureChainDebug.hpp's header comment.
+        int debug_dump_chains = 0;
+        amrex::ParmParse("axion_strings.curvature")
+            .queryAdd("debug_dump_chains", debug_dump_chains);
+        if (debug_dump_chains > 0 && Level() == 0)
+        {
+            dump_curvature_chains(state_new, Geom(), m_r_now,
+                                  debug_dump_chains, /*max_steps=*/60,
+                                  /*stride=*/97, "curvature_chains.dat");
+        }
+
+        if (Level() == 0)
+        {
+            amrex::Print()
+                << "  [AxionStrings curvature] measurements = "
+                << curvature.n_measurements
+                << "  below_range = " << curvature.n_below_range
+                << "  above_range = " << curvature.n_above_range
+                << "  excluded(cell!=2 faces) = "
+                << curvature.n_excluded_not_two
+                << "  excluded(neighbor!=2 faces) = "
+                << curvature.n_excluded_neighbor
+                << "  excluded(topology mismatch) = "
+                << curvature.n_excluded_topology
+                << "  excluded(degenerate tangent) = "
+                << curvature.n_excluded_degenerate_tangent
+                << "  excluded(no crossing) = "
+                << curvature.n_excluded_no_crossing
+                << "  excluded(degenerate hessian) = "
+                << curvature.n_excluded_degenerate_hessian << "\n";
+        }
+
+        const bool first_curvature_step =
+            !is_restart && !s_wrote_curvature_header;
+        s_wrote_curvature_header = true;
+
+        SmallDataIO curvature_file("curvature_distribution", tau, tau,
+                                   restart_time_tau, SmallDataIO::APPEND,
+                                   first_curvature_step);
+        if (first_curvature_step)
+        {
+            curvature_file.write_header_line(
+                {"plain_count", "length_weighted"},
+                {"tau", "bin_index", "log10_kappa_over_mr"});
+        }
+        curvature_file.remove_duplicate_time_data();
+        for (std::size_t bin = 0; bin < curvature.plain_count.size(); ++bin)
+        {
+            const std::vector<amrex::Real> coords{
+                tau, static_cast<amrex::Real>(bin),
+                static_cast<amrex::Real>(curvature.bin_center_log10[bin])};
+            const std::vector<amrex::Real> row{
+                static_cast<amrex::Real>(curvature.plain_count[bin]),
+                static_cast<amrex::Real>(curvature.length_weighted[bin])};
+            curvature_file.write_data_line(row, coords);
         }
     }
 

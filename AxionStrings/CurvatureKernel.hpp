@@ -58,13 +58,22 @@
 // the unit tangent at the two cells straddling a pierced face (cell A =
 // the face's canonical owner, cell B = the neighbour across it -- exactly
 // the two cells the connectivity above already identifies) and take
-//   kappa = |T_B - T_A| / (arc length from the face before A's chord to
-//                          the face after B's chord)
-// using the three face *positions* only to get that physical arc length
-// (P1 = the owner cell's other pierced face, P2 = the shared face, P3 =
-// the neighbour's other pierced face) -- T itself does not depend on face
-// positions at all, so it is free to vary continuously even between
-// immediately-adjacent pierced faces.
+//   kappa = |T_B - T_A| / (arc length between where T_A and T_B are
+//                          themselves sampled)
+// T_A and T_B are each evaluated from centred differences at a cell
+// centre, i.e. at (approximately) the midpoint of their own chord -- T_A
+// near the midpoint of P1->P2 (the owner cell's chord), T_B near the
+// midpoint of P2->P3 (the neighbour's chord). Their true separation is
+// therefore *one* chord length, not the full P1->P2->P3 arc: an earlier
+// version divided by the two-chord arc length and underestimated kappa by
+// a factor of 2 (caught 2026-09-24 via a sister project's port of this
+// method, confirmed here both algebraically and against an exact circle --
+// see the fix note at the call site). The three face *positions* are still
+// needed, only to get that one-chord arc length (P1 = the owner cell's
+// other pierced face, P2 = the shared face, P3 = the neighbour's other
+// pierced face) -- T itself does not depend on face positions at all, so
+// it is free to vary continuously even between immediately-adjacent
+// pierced faces.
 //
 // "interpolated_position": instead of fixing the bimodality by dropping
 // face positions, fix the positions themselves -- PlaquetteCrossing.hpp
@@ -77,10 +86,13 @@
 // version used on face *centres*, now on positions that can fall anywhere
 // within the plaquette rather than only at its middle.
 //
-// These are genuinely different observables (a tangent-turning-rate vs a
-// circumradius through interpolated positions), so agreement between them
-// is real cross-validation, not just running the same computation twice.
-// A spot check reconstructing actual chains of interpolated positions
+// These are two different constructions of the *same* quantity (a
+// tangent-turning-rate vs a circumradius through interpolated positions),
+// so agreement between them is real cross-validation, not just running the
+// same computation twice -- with tangent_vector's normalisation fixed
+// (2026-09-24, see above), they do agree; see the note near the end of
+// this comment. A spot check reconstructing actual chains of interpolated
+// positions
 // (CurvatureChainDebug.hpp) confirmed both track visibly-real bends and
 // straight stretches, but also turned up a genuine caveat specific to
 // interpolated_position: consecutive interpolated crossings can land
@@ -113,8 +125,18 @@
 // test found hessian_analytic tracking interpolated_position closely --
 // mean log10(kappa/m_r) within ~0.02-0.05 at nearly every snapshot, only
 // drifting to ~0.1 late in the run as statistics thin out -- while
-// tangent_vector sits on its own, consistently offset track ~0.3-0.4
-// lower throughout. Two structurally independent constructions (one from
+// tangent_vector sat on its own, consistently offset ~0.3-0.4 dex lower
+// throughout. At the time this was read as evidence that tangent_vector
+// measures a genuinely different quantity. It does not: the offset was a
+// plain factor-of-2 normalisation bug (kappa = |dT| / arc_length instead
+// of |dT| / (arc_length/2), see the fix note above and at the
+// TangentVector call site, fixed 2026-09-24) -- log10(2) = 0.30 dex,
+// exactly the low end of the observed offset, and the remainder is
+// consistent with the method's own discretisation error relative to the
+// other two. Once fixed, all three are expected to (and should be
+// re-checked to) track each other; the earlier "genuinely different
+// observables, don't expect agreement" framing above should be read in
+// that light. Two structurally independent constructions (one from
 // sub-grid positions, one from purely local derivatives) landing on
 // essentially the same number is real cross-validation, not a
 // coincidence of both being "the same formula in disguise".
@@ -670,13 +692,26 @@ compute_curvature_histogram(const amrex::MultiFab &state,
                                 continue;
                             }
 
+                            // T_a and T_b are each sampled at (approx.) the
+                            // midpoint of their own chord -- T_a near the
+                            // midpoint of other_of_this->face, T_b near the
+                            // midpoint of face->far_face. Their true
+                            // separation is therefore half of arc_length
+                            // (one chord, not two), not arc_length itself:
+                            // dividing by the full two-chord arc length
+                            // under-estimated kappa by a factor of 2 (caught
+                            // 2026-09-24 via cross-check with a sister
+                            // project's port of this method; confirmed
+                            // algebraically and numerically against an
+                            // exact circle: kappa*R=0.5 with the old
+                            // denominator, 1.0 with this one).
+                            weight = 0.5 * (d12 + d23);
                             const double dtx = t_b.x - t_a.x;
                             const double dty = t_b.y - t_a.y;
                             const double dtz = t_b.z - t_a.z;
                             kappa = std::sqrt(dtx * dtx + dty * dty +
                                               dtz * dtz) /
-                                   arc_length;
-                            weight = 0.5 * (d12 + d23);
+                                   weight;
                         }
                         else // InterpolatedPosition
                         {

@@ -1,0 +1,60 @@
+# Smoke test for the local string curvature diagnostic (docs/STATUS.md
+# task 1.10, 2026-09-26/28), composite/multi-level version: identical to
+# params_tagger_smoke_test.txt (real plaquette-based tagger, not a
+# placeholder -- refinement genuinely tracks the string network) with
+# axion_strings.compute_curvature turned on. This exact configuration was
+# used to validate the composite (Stage 2) extension: level 1 activates
+# by ~step 68 of the 80 steps below (confirmed via "new finest: 1" in the
+# run log), so a short run already exercises the coverage-mask/composite-
+# merge path, not just the level-0-only one -- not merely a fast-running
+# config, an actual regression check for the multi-level machinery.
+#
+# Swap axion_strings.curvature.method between "tangent_vector",
+# "interpolated_position" and "hessian_analytic" to check all three
+# (CurvatureKernel.hpp's header comment has the full description of each
+# and why three independent methods are kept rather than one). All three
+# give identical, exact results on a straight-string test (T1) and ran
+# cleanly through this exact multi-level configuration when validated.
+#
+# Box plan by hand (N=128 effective, N1=N2=1, a_inv=2, c=0 physical,
+# max_level=2): tau_f=11.31, L_tilde=11.31, N_base=32, dx_base=0.3536,
+# level thresholds at log(m_r/H)=2.080 (level 1), 3.466 (level 2).
+
+amr.verbose = 1
+amr.check_int = -1
+amr.plot_int  = -1
+amr.max_level = 2
+amr.max_grid_size   = 8
+amr.blocking_factor = 8
+amr.n_error_buf     = 2
+amr.regrid_int      = 2
+
+geometry.is_periodic = 1 1 1
+
+evolution.dt_multiplier = 0.2
+evolution.max_steps = 80
+
+axion_strings.a_inv = 2.0
+axion_strings.c0    = 0.0 # physical
+
+axion_strings.log_mr_over_h_i = 1.0
+
+axion_strings.N  = 128
+axion_strings.N1 = 1.0
+axion_strings.N2 = 1.0
+
+axion_strings.ic_mode = fourier_relaxed
+axion_strings.pre_evolution.gamma = 2.83
+axion_strings.pre_evolution.xi_target = 1.0
+axion_strings.pre_evolution.k_max_over_mr        = 16
+axion_strings.pre_evolution.mean_square_variance = 0.5
+axion_strings.pre_evolution.seed = 42
+
+axion_strings.output_first_log_mr_over_h = 1.0
+axion_strings.output_delta_log_mr_over_h = 0.2
+
+axion_strings.compute_curvature = 1
+axion_strings.curvature.method = interpolated_position
+axion_strings.curvature.n_bins = 24
+axion_strings.curvature.log10_kappa_over_mr_min = -3.0
+axion_strings.curvature.log10_kappa_over_mr_max = 1.0

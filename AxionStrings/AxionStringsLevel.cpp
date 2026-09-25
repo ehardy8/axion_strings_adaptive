@@ -1061,6 +1061,7 @@ void AxionStringsLevel::specific_post_timestep()
         const amrex::Real tau_pre = get_state_data(state_index).curTime();
         const double dx           = Geom().CellSize(0);
         const double L_tilde      = Geom().ProbLength(0);
+
         // xi is measured at tau = tau_i (the main run's start -- the
         // physical instant this relaxed state represents once the
         // transition below occurs), not tau_pre (confirmed with the user).
@@ -1068,6 +1069,74 @@ void AxionStringsLevel::specific_post_timestep()
             static_cast<double>(counts.n_p_plain), dx, L_tilde,
             s_background.a_inv, s_tau_i);
         const double ratio = xi / s_xi_target;
+
+        // Radial-mode visibility during relaxation (2026-09-25, with the
+        // user, following up on the same "strings are produced with excited
+        // core modes... obscure the physics" concern the 2026-09-23 handoff
+        // investigation looked at -- see docs/STATUS.md). Before this,
+        // specific_post_timestep() computed nothing but xi during Relaxing,
+        // so that investigation could only *infer* "pre-existing radiation
+        // baked in before handoff" from the post-handoff decay shape, never
+        // see it directly. Reuses the same, already-validated
+        // (tests/test_energy.cpp) radial kinetic/gradient/mass machinery
+        // the Evolving-phase diagnostics use, at the same (adaptive) cadence
+        // as the xi check above -- cheap enough for pre-evolution's typically
+        // small grids, and lets a run's own relaxation be checked rather than
+        // assumed sufficient.
+        const amrex::Real r_pre_now      = s_pre_background.R(tau_pre);
+        const amrex::Real lambda_pre_now = s_pre_background.lambda(tau_pre);
+        const std::vector<EnergyLevelInput> radial_levels{
+            EnergyLevelInput{&pre_state, Geom().CellSize(0), nullptr}};
+        const TotalEnergyResult radial_energy = compute_composite_total_energy(
+            radial_levels, r_pre_now, lambda_pre_now,
+            /*R_prime_over_R=*/1.0, s_energy_masking);
+        const double rad_total = radial_energy.rho_radial_kinetic_unscreened +
+                                 radial_energy.rho_radial_gradient_unscreened +
+                                 radial_energy.rho_radial_mass_unscreened;
+        const double axion_total =
+            radial_energy.rho_axion_kinetic_unscreened +
+            radial_energy.rho_axion_gradient_unscreened;
+        amrex::Print() << "  [AxionStrings pre-evolution RADIAL] tau_pre = "
+                       << tau_pre << "  R_pre = " << r_pre_now
+                       << "  m_r_pre = " << std::sqrt(lambda_pre_now)
+                       << "  rho_radial_total = " << rad_total
+                       << "  rho_axion_total = " << axion_total
+                       << "  radial/axion = " << (rad_total / axion_total)
+                       << "  rho_tot = " << radial_energy.rho_tot_unscreened
+                       << "\n";
+
+        const bool is_restart_pre =
+            amrex::ParmParse("amr").countval("restart") > 0;
+        const amrex::Real restart_time_pre =
+            is_restart_pre ? amrex::Real(get_gr_amr_ptr()->get_restart_time())
+                           : amrex::Real(0.0);
+        const bool first_pre_evolution_scalars_step =
+            !is_restart_pre && !s_wrote_pre_evolution_scalars_header;
+        s_wrote_pre_evolution_scalars_header = true;
+
+        SmallDataIO pre_evolution_scalars_file(
+            "pre_evolution_scalars", tau_pre, tau_pre, restart_time_pre,
+            SmallDataIO::APPEND, first_pre_evolution_scalars_step);
+        if (first_pre_evolution_scalars_step)
+        {
+            pre_evolution_scalars_file.write_header_line(
+                {"tau_pre", "R_pre", "m_r_pre", "N_p", "xi", "xi_target",
+                 "rho_radial_kin", "rho_radial_grad", "rho_radial_mass",
+                 "rho_axion_kin", "rho_axion_grad", "rho_tot"});
+        }
+        pre_evolution_scalars_file.remove_duplicate_time_data();
+        const std::vector<amrex::Real> pre_evolution_data_row{
+            tau_pre, r_pre_now,
+            static_cast<amrex::Real>(std::sqrt(lambda_pre_now)),
+            static_cast<amrex::Real>(counts.n_p_plain),
+            static_cast<amrex::Real>(xi), static_cast<amrex::Real>(s_xi_target),
+            static_cast<amrex::Real>(radial_energy.rho_radial_kinetic_unscreened),
+            static_cast<amrex::Real>(radial_energy.rho_radial_gradient_unscreened),
+            static_cast<amrex::Real>(radial_energy.rho_radial_mass_unscreened),
+            static_cast<amrex::Real>(radial_energy.rho_axion_kinetic_unscreened),
+            static_cast<amrex::Real>(radial_energy.rho_axion_gradient_unscreened),
+            static_cast<amrex::Real>(radial_energy.rho_tot_unscreened)};
+        pre_evolution_scalars_file.write_time_data_line(pre_evolution_data_row);
         // N_p_required: xi_from_plaquette_count (XiFormula.hpp) is exactly
         // linear in N_p, so the plaquette count that would give xi_target
         // is just a rescaling of the one just measured -- equivalent to

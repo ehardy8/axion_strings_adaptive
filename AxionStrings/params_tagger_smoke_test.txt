@@ -12,6 +12,24 @@
 # log_mr_over_h_i=1.0 is comfortably below both -- refinement should
 # appear "for free" once the string network forms, well before either
 # threshold is nominally required by resolution alone.
+#
+# pre_evolution.k_max_over_mr = 64, not 16 (2026-09-25, with the user,
+# investigating "radial mode oscillations obscuring the physics"): at 16,
+# this config's own freshly-generated Fourier IC already has xi below
+# xi_target=1.0 (confirmed directly: xi~0.20 at N=128), so the xi-
+# monitoring loop used to exit on its very first check -- pre-evolution
+# was a silent no-op here too, which quietly undermines this file's own
+# stated purpose above ("exactly the effect pre-evolution exists to
+# remove"): the sparse network this test saw was actually just k_max=16's
+# own low fresh-IC string density, not evidence relaxation had done
+# anything. 64 matches the k_max_over_mr already used in the real
+# production configs, giving a fresh xi far above target (~40x, densely
+# tangled -- the regime this test is specifically meant to guard against
+# spuriously over-tagging) so relaxation is now genuinely exercised down
+# to the same xi_target=1.0 sparse network this test always intended to
+# check against. Confirmed level 1 still activates and the tagged fraction
+# stays well below 100%. See docs/STATUS.md's "known issues" for the
+# fuller radial-mode investigation this came out of.
 
 amr.verbose = 1
 amr.check_int = -1
@@ -39,7 +57,7 @@ axion_strings.N2 = 1.0
 axion_strings.ic_mode = fourier_relaxed
 axion_strings.pre_evolution.gamma = 2.83
 axion_strings.pre_evolution.xi_target = 1.0
-axion_strings.pre_evolution.k_max_over_mr        = 16
+axion_strings.pre_evolution.k_max_over_mr        = 64
 axion_strings.pre_evolution.mean_square_variance = 0.5
 axion_strings.pre_evolution.seed = 42
 

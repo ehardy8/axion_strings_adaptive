@@ -1182,6 +1182,72 @@ smoothed after the fact) was discussed with the user but not implemented
 if a future config needs `xi` at handoff decoupled from what the smoothed-
 jump default happens to produce.
 
+- **Investigated and partially fixed (2026-09-25, with the user, a follow-up
+  on the same "radial mode oscillations... obscure the physics" concern as
+  the 2026-09-23 entry above): pre-evolution had zero radial-mode/energy
+  visibility, and two of the checked-in example configs' own parameters made
+  relaxation a silent no-op.**
+
+`FourierIC.hpp` generates `psi1`/`psi2` as independent, zero-mean Gaussian
+fields (conventions.md sec.7's "method (b)"), not projected onto the vacuum
+manifold -- a large, order-unity pointwise deviation from `|psi|=R` at
+essentially every grid point at `tau_pre=0`, by construction, not just near
+string cores. Pre-evolution's job is to let this settle before the main
+clock starts, but `specific_post_timestep()` during `Phase::Relaxing`
+computed nothing but the xi-monitoring plaquette count -- no radial energy,
+at any resolution -- which is exactly why the 2026-09-23 investigation above
+could only *infer* "pre-existing radiation baked in before handoff" from the
+post-handoff decay shape, never see it directly.
+
+**Fix 1, visibility**: `specific_post_timestep()` now also computes radial
+kinetic/gradient/mass energy during `Phase::Relaxing`, at the same adaptive
+cadence as the existing xi check, reusing the same already-validated
+(`tests/test_energy.cpp`) `EnergyKernel` machinery the Evolving-phase
+diagnostics use. Printed live and persisted to a new `pre_evolution_scalars
+.dat` (`tau_pre`, `R_pre`, `m_r_pre`, `N_p`, `xi`, `xi_target`, the three
+radial components, the two axion components, `rho_tot`), following the same
+header/restart-dedup convention as `network_scalars.dat`.
+
+**Fix 2, a real bug in the smoke-test configs**: with this new visibility,
+found that `params_curvature_smoke_test.txt` and `params_tagger_smoke_test
+.txt` (`k_max_over_mr=16`, `xi_target=1.0`) generate a fresh IC whose own xi
+is *already below* `xi_target` (confirmed directly: xi~0.20-0.86 depending
+on N) -- so the xi-monitoring loop exited on its very first check, handing
+an essentially un-relaxed field straight into the main run. This directly
+contradicted both files' own header comments (one asserts "the network
+starts over-tangled and this decreases as it relaxes"; the tagger one
+specifically credits pre-evolution for the sparse network it tests against,
+"exactly the effect pre-evolution exists to remove" -- neither was true at
+`k_max_over_mr=16`). The real production configs (`params_full_test_640
+/1024.txt`, the cluster guide) were not affected -- they already use
+`k_max_over_mr=64`, which starts the fresh network enormously over-tangled
+(xi~43x target), so genuine relaxation is exercised there. Fixed the two
+smoke-test configs to also use `k_max_over_mr=64` (tried lowering
+`xi_target` instead first; rejected -- it left too few strings for level 1
+to ever activate within the smoke test's step budget, defeating its actual
+purpose). Verified both fixed configs still activate level 1, keep the
+tagged fraction well below 100%, and stay smoke-test-fast (~2.5s wall time).
+
+**Not yet resolved**: a controlled probe (small grid, relaxation forced to
+run its full course) showed radial energy *does* decay substantially and
+monotonically through relaxation -- the friction mechanism genuinely works
+-- but the radial/axion energy ratio at the production `k_max_over_mr=64`
+scale was still ~10-30% at the moment relaxation's xi-only stopping
+criterion fired, not obviously negligible, and did not show a clean
+monotonic trend even after two orders of magnitude of decay in the
+absolute radial energy. The xi-based stopping criterion has no direct
+connection to radial-mode convergence at all; whether a given production
+run's relaxation was long enough is now *checkable* (via `pre_evolution_
+scalars.dat`), but the criterion itself is unchanged. Two further options
+were discussed and not pursued: (a) extend the stopping criterion to also
+require radial-energy convergence, not just xi; (b) change the IC
+generation itself to project `psi` onto the vacuum manifold (keep only
+phase) before `Pi=0` is set, the standard literature fix for this exact
+problem -- a genuine deviation from conventions.md's cited "method (b)",
+needing explicit sign-off before pursuing. Revisit either if checking a
+real production run's `pre_evolution_scalars.dat` shows the radial fraction
+is not settling to a small value by handoff.
+
 - **Added and tested (2026-09-24, with the user): `axion_strings.tagging.
   force_full_refinement`, a refinement-systematics control -- does AMR
   itself bias any observable, as opposed to just trading cost for

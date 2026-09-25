@@ -19,6 +19,21 @@
 # Box plan by hand (N=128 effective, N1=N2=1, a_inv=2, c=0 physical,
 # max_level=2): tau_f=11.31, L_tilde=11.31, N_base=32, dx_base=0.3536,
 # level thresholds at log(m_r/H)=2.080 (level 1), 3.466 (level 2).
+#
+# pre_evolution.k_max_over_mr = 64, not 16 (2026-09-25, with the user,
+# investigating "radial mode oscillations obscuring the physics"): at 16,
+# this config's own freshly-generated Fourier IC already has xi below
+# xi_target=1.0 (confirmed directly: xi~0.20 at N=128), so the xi-
+# monitoring loop used to exit on its very first check -- pre-evolution
+# was a silent no-op, handing an essentially un-relaxed field straight to
+# the main run, the opposite of what the comment two lines up assumes
+# ("the network starts over-tangled and this decreases as it relaxes").
+# 64 matches the k_max_over_mr already used in the real production configs
+# (params_full_test_640/1024.txt, the cluster guide) and gives a fresh xi
+# far above target (~40x), so relaxation is genuinely exercised here too --
+# confirmed level 1 still activates and the run stays smoke-test-fast
+# (~2.5s wall time). See docs/STATUS.md's "known issues" for the fuller
+# radial-mode investigation this came out of.
 
 amr.verbose = 1
 amr.check_int = -1
@@ -46,7 +61,7 @@ axion_strings.N2 = 1.0
 axion_strings.ic_mode = fourier_relaxed
 axion_strings.pre_evolution.gamma = 2.83
 axion_strings.pre_evolution.xi_target = 1.0
-axion_strings.pre_evolution.k_max_over_mr        = 16
+axion_strings.pre_evolution.k_max_over_mr        = 64
 axion_strings.pre_evolution.mean_square_variance = 0.5
 axion_strings.pre_evolution.seed = 42
 

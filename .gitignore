@@ -16,6 +16,7 @@ axion_spectrum.dat*
 axion_projection.dat*
 curvature_distribution.dat*
 curvature_chains.dat*
+pre_evolution_scalars.dat*
 parameters_and_version.txt
 Backtrace.*
 AxionStrings/loop_scalars.dat.old.*
